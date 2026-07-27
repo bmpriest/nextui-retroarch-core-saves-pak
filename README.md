@@ -1,15 +1,14 @@
-# CoreSaves.pak
+# RetroArch Core Saves.pak
 
-Tool pak for keeping NextUI SRAM saves in RetroArch core-name folders without
-replacing `minarch.elf` or any libretro core.
+Tool pak for keeping NextUI SRAM saves in RetroArch core-name folders. Offers to convert all `.<tag>.sav/.sav` files to RetroArch's `.srm` format (even compressing or decompressing them!).
 
-The canonical save tree is:
+After running, saves will be in:
 
 ```text
 /mnt/SDCARD/Saves/Cores/<RetroArch core name>/
 ```
 
-CoreSaves bind-mounts those folders onto the system-tag paths expected by
+RetroArch Core Saves bind-mounts those folders onto the system-tag paths expected by
 MinArch:
 
 ```text
@@ -18,8 +17,9 @@ MinArch:
 /mnt/SDCARD/Saves/GBA -> /mnt/SDCARD/Saves/Cores/gpSP
 ```
 
-Point SyncThing at `/mnt/SDCARD/Saves/Cores`. The tag folders are runtime
-aliases, not duplicate save trees.
+You can then point SyncThing at `/mnt/SDCARD/Saves/Cores` without performing any manual mapping. The tag folders (such as `/Saves/GB`) are runtime aliases, not duplicate save trees. When viewing the folders from the on-device file manager, they will be populated, but viewing the SD card from your computer will display empty directories.
+
+Saves are backed up to `.core-saves-backups` before any changes are made. Running the pak again will also allow you to revert the changes and remove the bindings.
 
 ## UI
 
@@ -58,7 +58,7 @@ per boot and remain active until shutdown or reversion.
 Persistent state and the generated mount table live in:
 
 ```text
-/mnt/SDCARD/.userdata/shared/CoreSaves/
+/mnt/SDCARD/.userdata/shared/RetroArch Core Saves/
 ```
 
 ## Save Formats
@@ -108,6 +108,8 @@ GBC=Gambatte
 SFC=Snes9x
 ```
 
+Additional emulator .paks still need testing, but should function as built-in emulators.
+
 ## UI Dependencies
 
 The platform UI binaries are from the MIT-licensed projects:
@@ -116,18 +118,12 @@ The platform UI binaries are from the MIT-licensed projects:
 - `josegonzalez/minui-presenter` 0.12.0
 
 Their license texts are included as `LICENSE.minui-list` and
-`LICENSE.minui-presenter`. `minui-keyboard` is unnecessary because the workflow
-has no free-text input, and `minui-btntest` is unnecessary because there is no
-background button listener.
-
-The bundled `save-rzip` helper uses the same MinArch-compatible conversion
-engine as Save Convert. Each pak includes its own static helper and remains
-usable when the other pak is not installed.
+`LICENSE.minui-presenter`.
 
 ## Tests
 
 Run the host-side migration suite with:
 
 ```sh
-CoreSaves.pak/tests/test-core-saves.sh
+"RetroArch Core Saves.pak/tests/test-core-saves.sh"
 ```

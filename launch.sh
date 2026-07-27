@@ -10,7 +10,7 @@ cd "$DIR" || exit 1
 : "${USERDATA_PATH:=$SDCARD_PATH/.userdata/$PLATFORM}"
 : "${LOGS_PATH:=$USERDATA_PATH/logs}"
 
-PAK_NAME="CoreSaves"
+PAK_NAME="RetroArch Core Saves"
 SAVES_PATH="$SDCARD_PATH/Saves"
 CORES_PATH="$SAVES_PATH/Cores"
 ROMS_PATH="$SDCARD_PATH/Roms"
@@ -661,7 +661,7 @@ write_menu() {
 show_compatibility() {
 	present "Raw MinUI, Generic, and uncompressed .srm saves use the same SRAM bytes; changing those filenames is normally sufficient.
 
-Compressed .srm files have a #RZIPv header. CoreSaves decodes them when restoring as Generic .sav. Saves can also differ between emulator cores, and RTC or memory-card files must be kept with the SRAM."
+Compressed .srm files have a #RZIPv header. RetroArch Core Saves decodes them when restoring as Generic .sav. Saves can also differ between emulator cores, and RTC or memory-card files must be kept with the SRAM."
 }
 
 run_action() {
@@ -703,7 +703,7 @@ main() {
 	local menu selection rc
 	case "$PLATFORM" in tg5040|tg5050) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
 	[ -x "$LIST_BIN" ] || {
-		show_progress "Missing CoreSaves UI for $PLATFORM" 100
+		show_progress "Missing RetroArch Core Saves UI for $PLATFORM" 100
 		return 1
 	}
 	mkdir -p "$SAVES_PATH"
