@@ -6,7 +6,7 @@
 : "${USERDATA_PATH:=$SDCARD_PATH/.userdata/$PLATFORM}"
 : "${LOGS_PATH:=$USERDATA_PATH/logs}"
 
-HOME_PATH="$SHARED_USERDATA_PATH/CoreSaves"
+HOME_PATH="$SHARED_USERDATA_PATH/RetroArch Core Saves"
 TABLE="$HOME_PATH/mounts.conf"
 ENABLED="$HOME_PATH/enabled"
 SAVES_PATH="$SDCARD_PATH/Saves"
@@ -27,8 +27,13 @@ while IFS='|' read -r tag core; do
 	[ -n "$tag" ] && [ -n "$core" ] || continue
 	source="$CORES_PATH/$core"
 	target="$SAVES_PATH/$tag"
-	mkdir -p "$source" "$target" || {
-		echo "Cannot create $source or $target" >> "$LOG_FILE"
+	if [ ! -d "$source" ]; then
+		echo "Missing core save source: $source" >> "$LOG_FILE"
+		failed=1
+		continue
+	fi
+	mkdir -p "$target" || {
+		echo "Cannot create $target" >> "$LOG_FILE"
 		failed=1
 		continue
 	}

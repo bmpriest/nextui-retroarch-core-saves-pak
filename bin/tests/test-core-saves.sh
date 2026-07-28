@@ -2,9 +2,10 @@
 
 set -eu
 
-PAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 TEST_ROOT=${TMPDIR:-/tmp}/core-saves-tests.$$
 HOST_RZIP="$TEST_ROOT/save-rzip"
+HOST_JQ=$(command -v jq)
 CONVERTER_SRC="$PAK_DIR/../Save Convert.pak/src"
 trap 'rm -rf "$TEST_ROOT"' EXIT INT TERM
 
@@ -73,9 +74,10 @@ load_fixture() {
 	write_emulator "$SDCARD_PATH" GB gambatte
 	write_emulator "$SDCARD_PATH" GBC gambatte
 
-	# shellcheck source=../launch.sh
+	# shellcheck source=../../launch.sh
 	. "$PAK_DIR/launch.sh"
 	RZIP_BIN="$HOST_RZIP"
+	JQ_BIN="$HOST_JQ"
 	show_progress() { :; }
 	run_mounts() { :; }
 }
@@ -106,9 +108,18 @@ test_minui_to_core_and_generic_restore() (
 	assert_file "$HOOK_FILE"
 	[ "$(retro_core_name_for_emu mednafen_supafaust)" = "Supafaust" ] ||
 		fail "Supafaust library name mapping is incorrect"
-	write_menu "$UI_DIR/menu-test.json"
 	if command -v jq >/dev/null 2>&1; then
-		jq -e '.items | length > 0' "$UI_DIR/menu-test.json" >/dev/null ||
+		current_settings > "$TEST_ROOT/menu-test.json"
+		jq -e '
+			.settings[1].selected == 2 and
+			.settings[2].selected == 1 and
+			.settings[3].options == ["0/3 mounted"] and
+			(.settings | length) == 6 and
+			.settings[5].name == "Revert to NextUI Saves" and
+			.settings[5].features.unselectable == false and
+			.conversions[1].name == ".srm" and
+			(has("selected") | not)
+		' "$TEST_ROOT/menu-test.json" >/dev/null ||
 			fail "generated menu is not valid JSON"
 	fi
 
@@ -182,6 +193,38 @@ test_malformed_rzip_restore_rolls_back() (
 	assert_contains "$SETTINGS_PATH" "saveFormat=1"
 )
 
+test_shared_core_collision_is_reported_and_preserved() (
+	load_fixture collision
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GB" "$SAVES_PATH/GBC"
+	gb_dir_inode=$(stat -c %i "$SAVES_PATH/GB")
+	gbc_dir_inode=$(stat -c %i "$SAVES_PATH/GBC")
+	printf 'gb-save' > "$SAVES_PATH/GB/Same.srm"
+	printf 'gbc-save' > "$SAVES_PATH/GBC/Same.srm"
+
+	enable_core_saves || fail "$ACTION_RESULT"
+
+	assert_file "$CORES_PATH/Gambatte/Same.srm"
+	assert_file "$CORES_PATH/Gambatte/Same.core-conflict-1.srm"
+	[ "$(cat "$CORES_PATH/Gambatte/Same.srm")" = "gb-save" ] ||
+		fail "primary collision save changed"
+	[ "$(cat "$CORES_PATH/Gambatte/Same.core-conflict-1.srm")" = "gbc-save" ] ||
+		fail "conflicting save was not preserved"
+	assert_contains "$REPORT_FILE" "ISSUE: Collision:"
+	assert_contains "$REPORT_FILE" "Same.core-conflict-1.srm"
+	assert_contains "$REPORT_FILE" "Issues requiring attention: 1"
+	case "$ACTION_RESULT" in
+		*"1 issue(s) need attention"*) ;;
+		*) fail "completion message did not notify the user: $ACTION_RESULT" ;;
+	esac
+	[ "$(stat -c %i "$SAVES_PATH/GB")" = "$gb_dir_inode" ] ||
+		fail "stock GB tag directory was replaced"
+	[ "$(stat -c %i "$SAVES_PATH/GBC")" = "$gbc_dir_inode" ] ||
+		fail "stock GBC tag directory was replaced"
+	assert_file "$ENABLED_FILE"
+	assert_contains "$SETTINGS_PATH" "saveFormat=3"
+)
+
 test_boot_mount_hook() (
 	load_fixture mounts
 	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA" "$TEST_ROOT/fake-bin"
@@ -197,21 +240,88 @@ test_boot_mount_hook() (
 	PATH="$TEST_ROOT/fake-bin:$PATH"
 	export PATH
 
-	"$PAK_DIR/mount.sh" || fail "boot mount hook failed"
+	"$PAK_DIR/bin/mount.sh" || fail "boot mount hook failed"
 	assert_contains "$FAKE_MOUNT_LOG" \
 		"-o bind $CORES_PATH/gpSP $SAVES_PATH/GBA"
 
 	printf 'do-not-hide' > "$SAVES_PATH/GBA/existing.sav"
-	if "$PAK_DIR/mount.sh"; then
+	if "$PAK_DIR/bin/mount.sh"; then
 		fail "mount hook hid a non-empty target"
 	fi
 	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
 		"Refusing to hide non-empty mountpoint: $SAVES_PATH/GBA"
+
+	rm -rf "$SAVES_PATH/GBA" "$CORES_PATH/gpSP"
+	if "$PAK_DIR/bin/mount.sh"; then
+		fail "mount hook accepted a missing core save source"
+	fi
+	assert_absent "$CORES_PATH/gpSP"
+	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
+		"Missing core save source: $CORES_PATH/gpSP"
+)
+
+test_active_refresh_is_rejected() (
+	load_fixture refresh
+	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
+	: > "$ENABLED_FILE"
+
+	if refresh_folders; then
+		fail "active refresh unexpectedly succeeded"
+	fi
+
+	assert_contains "$MOUNT_TABLE" "GBA|gpSP"
+	[ "$ACTION_RESULT" = \
+		"Restore saves to /Saves before refreshing core folders." ] ||
+		fail "unexpected active refresh message: $ACTION_RESULT"
+)
+
+test_inactive_menu_state() (
+	load_fixture menu
+	printf 'saveFormat=0\n' > "$SETTINGS_PATH"
+
+	current_settings > "$TEST_ROOT/inactive-menu.json"
+	jq -e '
+		.settings[1].selected == 1 and
+		.settings[2].selected == 0 and
+		.settings[3].options == ["0 mounted"] and
+		(.settings | length) == 6 and
+		.settings[5].name == "Convert to RetroArch Core Saves" and
+		.settings[5].features.unselectable == false and
+		.conversions[1].name == ".<pak>.sav" and
+		(has("selected") | not)
+	' "$TEST_ROOT/inactive-menu.json" >/dev/null ||
+		fail "inactive menu state is incorrect"
+	cleanup
+)
+
+test_in_place_conversion() (
+	load_fixture conversion
+	printf 'saveFormat=2\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'convert-me' > "$SAVES_PATH/GBA/Game.sav"
+
+	convert_saves_in_place 1 || fail "$ACTION_RESULT"
+	assert_file "$SAVES_PATH/GBA/Game.srm"
+	assert_absent "$SAVES_PATH/GBA/Game.sav"
+	"$HOST_RZIP" is-rzip "$SAVES_PATH/GBA/Game.srm" ||
+		fail "in-place conversion did not encode RZIP"
+	assert_contains "$SETTINGS_PATH" "saveFormat=1"
+
+	convert_saves_in_place 2 || fail "$ACTION_RESULT"
+	assert_file "$SAVES_PATH/GBA/Game.sav"
+	assert_absent "$SAVES_PATH/GBA/Game.srm"
+	[ "$(cat "$SAVES_PATH/GBA/Game.sav")" = "convert-me" ] ||
+		fail "in-place conversion changed save payload"
+	assert_contains "$SETTINGS_PATH" "saveFormat=2"
 )
 
 test_minui_to_core_and_generic_restore
 test_generic_to_core
 test_rzip_to_generic_conversion
 test_malformed_rzip_restore_rolls_back
+test_shared_core_collision_is_reported_and_preserved
 test_boot_mount_hook
-echo "CoreSaves tests passed"
+test_active_refresh_is_rejected
+test_inactive_menu_state
+test_in_place_conversion
+echo "RetroArch Core Saves tests passed"

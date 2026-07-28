@@ -1,0 +1,288 @@
+#!/bin/sh
+
+strip_short_ext() {
+	local name="$1"
+	local base=${name%.*}
+	local ext=${name##*.}
+	local len
+	if [ "$base" != "$name" ]; then
+		len=${#ext}
+		if [ "$len" -ge 1 ] && [ "$len" -le 4 ]; then
+			echo "$base"
+			return
+		fi
+	fi
+	echo "$name"
+}
+
+core_target_name() {
+	local base="$1"
+	local format="$2"
+	local stem stripped
+	case "$format:$base" in
+		0:*.sav)
+			stem=${base%.sav}
+			stripped=$(strip_short_ext "$stem")
+			if [ "$stripped" != "$stem" ]; then echo "$stripped.srm"; else echo "$base"; fi
+			;;
+		2:*.sav) echo "${base%.sav}.srm" ;;
+		*) echo "$base" ;;
+	esac
+}
+
+legacy_name_for_file() {
+	local core_rel="$1"
+	local format="$2"
+	local base
+	base=$(basename "$core_rel")
+	case "$format:$base" in
+		2:*.srm) echo "${base%.srm}.sav"; return ;;
+	esac
+	echo "$base"
+}
+
+unique_path() {
+	local dst="$1"
+	local dir base stem ext n candidate
+	if [ ! -e "$dst" ]; then echo "$dst"; return; fi
+	dir=$(dirname "$dst")
+	base=$(basename "$dst")
+	stem=${base%.*}
+	ext=${base##*.}
+	n=1
+	while :; do
+		if [ "$stem" != "$base" ]; then
+			candidate="$dir/$stem.core-conflict-$n.$ext"
+		else
+			candidate="$dir/$base.core-conflict-$n"
+		fi
+		if [ ! -e "$candidate" ]; then echo "$candidate"; return; fi
+		n=$((n + 1))
+	done
+}
+
+copy_save_file() {
+	local source="$1"
+	local destination="$2"
+	local mode="$3"
+	case "$mode" in
+		copy) cp -p "$source" "$destination" && return 0 ;;
+		decode)
+			[ -x "$RZIP_BIN" ] || {
+				log "Missing save converter: $RZIP_BIN"
+				return 1
+			}
+			"$RZIP_BIN" decode "$source" "$destination" >> "$LOG_FILE" 2>&1 &&
+				return 0
+			;;
+		*) log "Unknown save copy mode: $mode"; return 1 ;;
+	esac
+	rm -f "$destination"
+	return 1
+}
+
+write_file_list() {
+	local root="$1"
+	local output="$2"
+	find "$root" -type f > "$output"
+}
+
+clear_mountpoint() {
+	local tag="$1"
+	local path="$SAVES_PATH/$tag"
+	[ -d "$path" ] || {
+		mkdir -p "$path"
+		return
+	}
+	rm -rf "$path"/* "$path"/.[!.]* "$path"/..?*
+}
+
+conversion_root() {
+	if [ -f "$ENABLED_FILE" ]; then
+		echo "$CORES_PATH"
+	else
+		echo "$SAVES_PATH"
+	fi
+}
+
+conversion_format_for_option() {
+	case "$1" in
+		0) echo 2 ;;
+		1) echo 0 ;;
+		2) echo 3 ;;
+		3) echo 1 ;;
+		*) return 1 ;;
+	esac
+}
+
+conversion_find_files() {
+	local root="$1"
+	local pattern="$2"
+	if [ "$root" = "$SAVES_PATH" ]; then
+		find "$root" -path "$CORES_PATH" -prune -o -type f -name "$pattern" -print
+	else
+		find "$root" -type f -name "$pattern"
+	fi
+}
+
+conversion_minui_name() {
+	local stem="$1"
+	local candidates="$HOME_PATH/conversion-roms.$$"
+	local rom base stripped count
+	: > "$candidates" || return 1
+	find "$ROMS_PATH" -type f 2>/dev/null | while IFS= read -r rom; do
+		base=$(basename "$rom")
+		stripped=$(strip_short_ext "$base")
+		[ "$stripped" = "$stem" ] && echo "$base"
+	done | sort -u > "$candidates"
+	count=$(wc -l < "$candidates" | tr -d ' ')
+	if [ "$count" = 1 ]; then
+		cat "$candidates"
+		rm -f "$candidates"
+		return 0
+	fi
+	rm -f "$candidates"
+	return 1
+}
+
+build_conversion_plan() {
+	local root="$1"
+	local source_format="$2"
+	local target_format="$3"
+	local plan="$4"
+	local unresolved="$5"
+	local pattern file rel parent base without_save stem stripped
+	local destination_name destination mode minui_name
+	: > "$plan"
+	: > "$unresolved"
+	case "$source_format" in
+		0|2) pattern='*.sav' ;;
+		1|3) pattern='*.srm' ;;
+		*) return 1 ;;
+	esac
+
+	conversion_find_files "$root" "$pattern" | while IFS= read -r file; do
+		rel=${file#"$root"/}
+		parent=$(dirname "$file")
+		base=$(basename "$file")
+		case "$source_format" in
+			0)
+				without_save=${base%.sav}
+				stripped=$(strip_short_ext "$without_save")
+				[ "$stripped" != "$without_save" ] || continue
+				stem="$stripped"
+				;;
+			2) stem=${base%.sav} ;;
+			1|3) stem=${base%.srm} ;;
+		esac
+
+		case "$target_format" in
+			0)
+				minui_name=$(conversion_minui_name "$stem")
+				if [ -z "$minui_name" ]; then
+					echo "$rel" >> "$unresolved"
+					continue
+				fi
+				destination_name="$minui_name.sav"
+				;;
+			1|3) destination_name="$stem.srm" ;;
+			2) destination_name="$stem.sav" ;;
+			*) exit 1 ;;
+		esac
+		destination="$parent/$destination_name"
+		if [ "$destination" != "$file" ] && [ -e "$destination" ]; then
+			printf 'Conflict: %s -> %s\n' "$rel" "${destination#"$root"/}" >> "$unresolved"
+			continue
+		fi
+		if [ "$target_format" = 1 ]; then mode=encode; else mode=decode; fi
+		printf '%s\t%s\t%s\n' "$file" "$destination" "$mode" >> "$plan"
+	done
+
+	[ ! -s "$unresolved" ] || return 1
+	if cut -f2 "$plan" | sort | uniq -d | grep -q .; then
+		echo "Multiple saves resolve to the same destination." > "$unresolved"
+		return 1
+	fi
+}
+
+restore_conversion_backup() {
+	local root="$1"
+	local backup="$2"
+	local relative=${root#"$SAVES_PATH"}
+	find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf {} \; || return 1
+	cp -a "$backup/Saves$relative"/. "$root"/ || return 1
+	if [ "$(cat "$backup/settings-existed" 2>/dev/null)" = 1 ]; then
+		cp -p "$backup/minuisettings.txt" "$SETTINGS_PATH"
+	else
+		rm -f "$SETTINGS_PATH"
+	fi
+}
+
+convert_saves_in_place() {
+	local target_format="$1"
+	local source_format root plan unresolved count backup
+	local source destination mode tmp failed
+	source_format=$(get_save_format)
+	[ "$source_format" != "$target_format" ] || {
+		ACTION_RESULT="That save format is already active."
+		return 0
+	}
+	root=$(conversion_root)
+	plan="$HOME_PATH/conversion-plan.$$"
+	unresolved="$HOME_PATH/conversion-unresolved.$$"
+
+	show_progress "Checking save filenames..." 10
+	if ! build_conversion_plan "$root" "$source_format" "$target_format" \
+		"$plan" "$unresolved"; then
+		count=$(wc -l < "$unresolved" | tr -d ' ')
+		cp "$unresolved" "$LOGS_PATH/core-saves-conversion-unresolved.txt"
+		rm -f "$plan" "$unresolved"
+		ACTION_RESULT="Conversion stopped before changing files.
+$count filename conflicts or unresolved ROM extensions were found.
+See logs/core-saves-conversion-unresolved.txt."
+		return 1
+	fi
+	count=$(wc -l < "$plan" | tr -d ' ')
+	show_progress "Backing up saves..." 25
+	backup=$(make_backup "format-$source_format-to-$target_format") || {
+		rm -f "$plan" "$unresolved"
+		ACTION_RESULT="Could not back up the save tree."
+		return 1
+	}
+
+	show_progress "Converting $count save files..." 50
+	failed=0
+	while IFS="$(printf '\t')" read -r source destination mode; do
+		[ -n "$source" ] || continue
+		tmp="$destination.core-saves-convert.$$"
+		rm -f "$tmp"
+		if ! "$RZIP_BIN" "$mode" "$source" "$tmp" >> "$LOG_FILE" 2>&1 ||
+			! mv "$tmp" "$destination"; then
+			rm -f "$tmp"
+			failed=1
+			break
+		fi
+		if [ "$source" != "$destination" ] && ! rm -f "$source"; then
+			failed=1
+			break
+		fi
+	done < "$plan"
+
+	if [ "$failed" = 1 ] || ! set_save_format "$target_format"; then
+		show_progress "Restoring backup..." 80
+		if restore_conversion_backup "$root" "$backup"; then
+			ACTION_RESULT="Conversion failed and the backup was restored.
+Backup: $backup"
+		else
+			ACTION_RESULT="Conversion failed and automatic restore also failed.
+The untouched backup is at: $backup"
+		fi
+		rm -f "$plan" "$unresolved"
+		sync
+		return 1
+	fi
+	rm -f "$plan" "$unresolved"
+	sync
+	ACTION_RESULT="$count saves converted to $(save_format_name "$target_format").
+Backup: $backup"
+}

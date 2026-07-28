@@ -1,0 +1,71 @@
+{
+	"settings": [
+		{
+			"name": "Save Status:",
+			"features": {
+				"is_header": true,
+				"unselectable": true
+			}
+		},
+		{
+			"name": "> Format:",
+			"options": [".sav", ".<pak>.sav", ".srm", ".srm (Compressed)"],
+			"selected": 0,
+			"features": {
+				"unselectable": true
+			}
+		},
+		{
+			"name": "> Location:",
+			"options": ["/Saves", "/Saves/Cores"],
+			"selected": 0,
+			"features": {
+				"unselectable": true
+			}
+		},
+		{	
+			"name": "> Mounts:",
+			"options": ["$mounts"],
+			"selected": 0,
+			"features": {
+				"unselectable": true
+			}
+		},
+		{
+			"name": " ",
+			"features": {
+				"unselectable": true
+			}
+		},
+		{
+			"name": "Convert to RetroArch Core Saves",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    },
+		{
+			"name": "Revert to NextUI Saves",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    }
+	],
+	"conversions": [
+		{
+			"name": "From:",
+			"options": ["To:"],
+			"features": {
+				"unselectable": true
+		  }
+    },
+		{
+			"name": ".sav",
+			"options": [".sav", ".<pak>.sav", ".srm", ".srm (Compressed)"],
+			"features": {
+				"unselectable": false
+		  }
+    }
+	]
+}

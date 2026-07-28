@@ -21,6 +21,15 @@ You can then point SyncThing at `/mnt/SDCARD/Saves/Cores` without performing any
 
 Saves are backed up to `.core-saves-backups` before any changes are made. Running the pak again will also allow you to revert the changes and remove the bindings.
 
+The existing `/Saves/<tag>` directories are retained and emptied before the
+core folders are mounted over them.
+
+If multiple systems sharing a core contain the same save filename, every copy
+is preserved. The first keeps the normal filename and additional saves use
+`Game.core-conflict-N.srm`. Because MinArch will not load those conflict names
+automatically, the completion dialog reports the issue and asks you to review
+the files.
+
 ## UI
 
 The pak displays:
@@ -60,6 +69,16 @@ Persistent state and the generated mount table live in:
 ```text
 /mnt/SDCARD/.userdata/shared/RetroArch Core Saves/
 ```
+
+The most recent migration or restore report is saved as:
+
+```text
+/mnt/SDCARD/.userdata/shared/RetroArch Core Saves/conversion-report.txt
+```
+
+It records filename collisions and conversion or copy failures. When a report
+contains issues, the completion dialog displays the issue count and report
+location.
 
 ## Save Formats
 
@@ -110,20 +129,31 @@ SFC=Snes9x
 
 Additional emulator .paks still need testing, but should function as built-in emulators.
 
+## Installation
+
+1. Download `RetroArch Core Saves.pak.zip` from Releases.
+2. Extract the archive.
+3. Copy `RetroArch Core Saves.pak` folder to `/Tools/<PLATFORM>/` on your SD Card.
+   `<PLATFORM>` should match your device: either `tg5040` or `tg5050`.
+
 ## UI Dependencies
 
 The platform UI binaries are from the MIT-licensed projects:
 
 - `josegonzalez/minui-list` 0.14.0
 - `josegonzalez/minui-presenter` 0.12.0
+- `jqlang/jq`
 
-Their license texts are included as `LICENSE.minui-list` and
-`LICENSE.minui-presenter`.
+Their license texts are included under `bin/`.
+
+Shell helpers for reporting, settings, emulator mappings, backups, save-format
+handling, and mount management also live under `bin/`. The boot hook installs
+its runtime copy from `bin/mount.sh`.
 
 ## Tests
 
 Run the host-side migration suite with:
 
 ```sh
-"RetroArch Core Saves.pak/tests/test-core-saves.sh"
+"RetroArch Core Saves.pak/bin/tests/test-core-saves.sh"
 ```
