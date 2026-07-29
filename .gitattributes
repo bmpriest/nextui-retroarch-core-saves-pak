@@ -1,0 +1,5 @@
+/Findings.md export-ignore
+/tests/ export-ignore
+/bin/desktop/ export-ignore
+/bin/tests/ export-ignore
+/bin/SHA256SUMS export-ignore

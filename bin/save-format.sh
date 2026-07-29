@@ -68,11 +68,11 @@ copy_save_file() {
 	case "$mode" in
 		copy) cp -p "$source" "$destination" && return 0 ;;
 		decode)
-			[ -x "$RZIP_BIN" ] || {
-				log "Missing save converter: $RZIP_BIN"
+			command -v save-rzip >/dev/null 2>&1 || {
+				log "Missing save converter: save-rzip"
 				return 1
 			}
-			"$RZIP_BIN" decode "$source" "$destination" >> "$LOG_FILE" 2>&1 &&
+			save-rzip decode "$source" "$destination" >> "$LOG_FILE" 2>&1 &&
 				return 0
 			;;
 		*) log "Unknown save copy mode: $mode"; return 1 ;;
@@ -118,8 +118,16 @@ conversion_format_for_option() {
 conversion_find_files() {
 	local root="$1"
 	local pattern="$2"
+	local core
 	if [ "$root" = "$SAVES_PATH" ]; then
 		find "$root" -path "$CORES_PATH" -prune -o -type f -name "$pattern" -print
+	elif [ "$root" = "$CORES_PATH" ]; then
+		[ -f "$MOUNT_TABLE" ] || return 0
+		awk -F'|' 'NF >= 2 && !seen[$2]++ { print $2 }' "$MOUNT_TABLE" |
+			while IFS= read -r core; do
+				[ -d "$CORES_PATH/$core" ] || continue
+				find "$CORES_PATH/$core" -type f -name "$pattern"
+			done
 	else
 		find "$root" -type f -name "$pattern"
 	fi
@@ -205,28 +213,11 @@ build_conversion_plan() {
 	fi
 }
 
-restore_conversion_backup() {
-	local root="$1"
-	local backup="$2"
-	local relative=${root#"$SAVES_PATH"}
-	find "$root" -mindepth 1 -maxdepth 1 -exec rm -rf {} \; || return 1
-	cp -a "$backup/Saves$relative"/. "$root"/ || return 1
-	if [ "$(cat "$backup/settings-existed" 2>/dev/null)" = 1 ]; then
-		cp -p "$backup/minuisettings.txt" "$SETTINGS_PATH"
-	else
-		rm -f "$SETTINGS_PATH"
-	fi
-}
-
 convert_saves_in_place() {
 	local target_format="$1"
 	local source_format root plan unresolved count backup
 	local source destination mode tmp failed
 	source_format=$(get_save_format)
-	[ "$source_format" != "$target_format" ] || {
-		ACTION_RESULT="That save format is already active."
-		return 0
-	}
 	root=$(conversion_root)
 	plan="$HOME_PATH/conversion-plan.$$"
 	unresolved="$HOME_PATH/conversion-unresolved.$$"
@@ -249,14 +240,49 @@ See logs/core-saves-conversion-unresolved.txt."
 		ACTION_RESULT="Could not back up the save tree."
 		return 1
 	}
+	begin_operation conversion || {
+		rm -f "$plan" "$unresolved"
+		ACTION_RESULT="Could not initialize recoverable conversion state.
+Backup: $backup"
+		return 1
+	}
+	prepare_conversion_recovery "$plan" || {
+		rm -f "$plan" "$unresolved"
+		abort_operation "Could not record the files covered by conversion rollback.
+Backup: $backup"
+		return 1
+	}
+	operation_phase converting "$backup" || {
+		rm -f "$plan" "$unresolved"
+		abort_operation "Could not record the conversion backup in the operation journal.
+Backup: $backup"
+		return 1
+	}
 
 	show_progress "Converting $count save files..." 50
 	failed=0
 	while IFS="$(printf '\t')" read -r source destination mode; do
 		[ -n "$source" ] || continue
+		if [ "$mode" = encode ] &&
+			save-rzip is-rzip "$source" >> "$LOG_FILE" 2>&1; then
+			if [ "$source" != "$destination" ]; then
+				tmp="$destination.core-saves-convert.$$"
+				rm -f "$tmp"
+				cp -p "$source" "$tmp" && mv "$tmp" "$destination" || {
+					rm -f "$tmp"
+					failed=1
+					break
+				}
+				rm -f "$source" || {
+					failed=1
+					break
+				}
+			fi
+			continue
+		fi
 		tmp="$destination.core-saves-convert.$$"
 		rm -f "$tmp"
-		if ! "$RZIP_BIN" "$mode" "$source" "$tmp" >> "$LOG_FILE" 2>&1 ||
+		if ! save-rzip "$mode" "$source" "$tmp" >> "$LOG_FILE" 2>&1 ||
 			! mv "$tmp" "$destination"; then
 			rm -f "$tmp"
 			failed=1
@@ -270,19 +296,17 @@ See logs/core-saves-conversion-unresolved.txt."
 
 	if [ "$failed" = 1 ] || ! set_save_format "$target_format"; then
 		show_progress "Restoring backup..." 80
-		if restore_conversion_backup "$root" "$backup"; then
-			ACTION_RESULT="Conversion failed and the backup was restored.
-Backup: $backup"
-		else
-			ACTION_RESULT="Conversion failed and automatic restore also failed.
-The untouched backup is at: $backup"
-		fi
 		rm -f "$plan" "$unresolved"
-		sync
+		abort_operation "Conversion failed.
+Backup: $backup"
 		return 1
 	fi
 	rm -f "$plan" "$unresolved"
-	sync
+	commit_operation || {
+		abort_operation "Conversion completed, but its recovery journal could not be committed.
+Backup: $backup"
+		return 1
+	}
 	ACTION_RESULT="$count saves converted to $(save_format_name "$target_format").
 Backup: $backup"
 }

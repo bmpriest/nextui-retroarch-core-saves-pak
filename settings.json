@@ -28,7 +28,8 @@
 			"options": ["$mounts"],
 			"selected": 0,
 			"features": {
-				"unselectable": true
+				"unselectable": true,
+				"confirm_text": "View"
 			}
 		},
 		{
@@ -57,12 +58,56 @@
 			"name": "From:",
 			"options": ["To:"],
 			"features": {
+				"alignment": "left",
 				"unselectable": true
 		  }
     },
 		{
 			"name": ".sav",
-			"options": [".sav", ".<pak>.sav", ".srm", ".srm (Compressed)"],
+			"features": {
+				"unselectable": true
+		  }
+    },
+		{
+			"name": ".sav",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    },
+		{
+			"name": ".<pak>.sav",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    },
+		{
+			"name": ".srm",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    },
+		{
+			"name": ".srm (compressed)",
+			"features": {
+				"alignment": "right",
+				"unselectable": false
+		  }
+    }
+	],
+	"mounts": [
+		{
+			"name": "/Saves:",
+			"options": ["/Saves/Cores:"],
+			"features": {
+				"unselectable": true
+		  }
+    },
+		{
+			"name": " /FC",
+			"options": [" /Snes9x"],
 			"features": {
 				"unselectable": false
 		  }

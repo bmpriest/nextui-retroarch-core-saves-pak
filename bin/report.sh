@@ -18,6 +18,10 @@ report_issue() {
 	log "$*"
 }
 
+report_note() {
+	printf '%s\n' "$*" >> "$REPORT_FILE"
+}
+
 finish_report() {
 	{
 		echo
