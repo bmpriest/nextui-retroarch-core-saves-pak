@@ -165,15 +165,8 @@ current_settings() {
 		'.settings[1].selected = $format
 		| .settings[2].selected = $location
 		| .settings[3].options = [$mounts]
-		| .settings[3].features.unselectable = true
-		| del(.settings[3].features.confirm_text)
-		| if $mounts_selectable then
-			.settings[4].name = "View Mounts"
-			| .settings[4].features.alignment = "right"
-			| .settings[4].features.unselectable = false
-			| .settings[4].features.confirm_text = "VIEW"
-		  else .
-		  end
+		| .settings[3].features.unselectable = false
+		| .settings[3].features.show_confirm = true
 		| if $active then del(.settings[5]) else del(.settings[6]) end
 		| .settings[5].features.unselectable = false
 		| del(.settings[5].features.disabled)
@@ -347,7 +340,7 @@ main() {
 		case "$rc" in
 			0)
 				[ -n "$selection" ] || continue
-				if [ "$selection" = "View Mounts" ]; then
+				if [ "$selection" = "> Mounts:" ]; then
 					mounts_screen "$settings"
 				else
 					run_action "$selection"
