@@ -23,7 +23,15 @@
 				"unselectable": true
 			}
 		},
-		{	
+		{
+			"name": "> Mappings:",
+			"options": ["$mappings"],
+			"selected": 0,
+			"features": {
+				"unselectable": true
+			}
+		},
+		{
 			"name": "> Mounts:",
 			"options": ["$mounts"],
 			"selected": 0,

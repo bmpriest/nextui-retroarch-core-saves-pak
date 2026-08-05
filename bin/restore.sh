@@ -132,14 +132,24 @@ Report: $REPORT_FILE"
 Report: $REPORT_FILE"
 			return 1
 		}
-		final=$(unique_path "$dst")
-		if [ "$final" != "$dst" ]; then
-			report_issue "Collision: $file was restored to $final. Review both saves and choose the correct one."
-		fi
 		mode=copy
 		if [ "$target_format" = 2 ] &&
 			[ "$base" != "$original_base" ]; then
 			mode=decode
+		fi
+		# Only a straight copy leaves the destination byte-identical to the
+		# source, so only then can an existing file be reused instead of
+		# becoming a conflict.
+		if [ "$mode" = copy ]; then
+			final=$(unique_path "$dst" "$file")
+		else
+			final=$(unique_path "$dst")
+		fi
+		if [ -e "$final" ]; then
+			continue
+		fi
+		if [ "$final" != "$dst" ]; then
+			report_issue "Collision: $file was restored to $final. Review both saves and choose the correct one."
 		fi
 		copy_save_file "$file" "$final" "$mode" || {
 			rm -f "$mappings" "$plan" "$rom_index" "$tags"

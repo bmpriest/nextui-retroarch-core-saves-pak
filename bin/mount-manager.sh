@@ -77,13 +77,22 @@ unmount_table() {
 	done < "$table"
 }
 
+shell_quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 install_boot_hook() {
 	mkdir -p "$HOOK_DIR" || return 1
 	cp "$DIR/bin/boot-mount.sh" "$HOME_PATH/boot-mount.sh" || return 1
 	chmod 0755 "$HOME_PATH/boot-mount.sh" || return 1
+	# boot-mount.sh cannot derive the state directory itself: it is reached
+	# through the hook, not through the pak, so it has no way to know the pak
+	# folder was renamed. Pass the resolved path in.
 	{
 		echo '#!/bin/sh'
-		printf 'exec "%s"\n' "$HOME_PATH/boot-mount.sh"
+		printf 'CORE_SAVES_HOME=%s\n' "$(shell_quote "$HOME_PATH")"
+		echo 'export CORE_SAVES_HOME'
+		printf 'exec %s\n' "$(shell_quote "$HOME_PATH/boot-mount.sh")"
 	} > "$HOOK_FILE" || return 1
 	chmod 0755 "$HOOK_FILE"
 }

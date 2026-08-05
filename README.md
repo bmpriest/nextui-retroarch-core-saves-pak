@@ -32,13 +32,37 @@ The pak displays:
 
 - Current NextUI save format.
 - Whether saves currently point to `/Saves` or `/Saves/Cores`.
+- How many installed emulators are mapped to a core, as `resolved/mappable`.
 - How many configured tag folders are mounted, if any.
 
-The Mounts row shows the active count in two columns. When at least one bind
-mount is active, a separate `View Mounts` action appears beneath it. Its
-read-only detail screen shows every immediate `/Saves` folder except `Cores`
-beside its mapped `/Saves/Cores` folder. Unmapped folders from either side are
-also shown with a blank opposite column.
+The Mappings row counts only emulator paks that declare an `EMU_EXE`, so a
+standalone emulator that can never map is left out of the total rather than
+holding it below 100% forever. `3/4` therefore means one installed libretro
+emulator still needs a `mapping.conf` entry.
+
+## Completing partial mappings
+
+When an emulator cannot be mapped, its saves are left in `/Saves/<tag>` and the
+conversion report names it. After adding the override to `mapping.conf`, reopen
+the pak: while core saves are active and mappings are incomplete — or the mount
+table no longer matches what discovery produces, which also covers installing or
+removing an emulator pak — a **Re-apply Core Save Mappings** action appears above
+**Revert to NextUI Saves**, with the cursor defaulting to it.
+
+Re-applying runs the same migration as the initial conversion. It is safe to
+repeat: systems already in `/Saves/Cores` are detected as unchanged and left
+alone, so only the newly mapped ones move. The action disappears once every
+mappable emulator is mapped and applied. Reverting and converting again is not
+required, and should not be used for this — a full restore does ROM-name
+matching that can leave shared-core saves ambiguous.
+
+The Mounts row shows the active count. It is selectable only while at least one
+bind mount is verified live in `/proc/self/mountinfo`; otherwise it is a plain
+status readout, so a mount table left behind by an earlier session cannot be
+opened as if it were current. When selectable, confirming it opens a read-only
+detail screen showing every immediate `/Saves` folder except `Cores` beside its
+mapped `/Saves/Cores` folder. Unmapped folders from either side are also shown
+with a blank opposite column.
 
 The Convert Saves screen presents the configured format as a left-aligned
 `From` value and all four formats as selectable targets. The current format
@@ -160,9 +184,24 @@ normal SyncThing conflict or a sync taken while an emulator is writing a file.
 
 ## Folder Mapping
 
-Installed emulator paks are discovered from their `EMU_EXE=` setting. Known
-core executable names are converted to exact `retro_system_info.library_name`
-spelling.
+Installed emulator paks are discovered from their `EMU_EXE=` setting and
+converted to the core's exact `retro_system_info.library_name`, which is the
+folder name RetroArch and MinArch actually use. Every core shipped in NextUI
+Base and Extras is covered, along with the pak-store cores whose names have been
+verified against core source.
+
+An `EMU_EXE` value that is not recognized is **not** guessed at. That tag is left
+unmapped, its saves stay in `/Saves/<tag>`, and the conversion report names the
+emulator and asks you to add an override. Falling back to the `EMU_EXE` spelling
+would create a folder the emulator never writes to and silently split your saves
+across two locations. A pak with no `EMU_EXE` at all — a standalone emulator such
+as PPSSPP or DraStic, which keeps its own saves — is noted rather than flagged,
+since there is nothing to map.
+
+Note that `library_name` is not always the name RetroArch displays, nor the
+`corename` in libretro's `.info` metadata: FreeIntv reports `freeintv`. On device
+you can read the real value with
+`strings /path/to/<core>_libretro.so | grep -i <core>`.
 
 Custom overrides go in `mapping.conf`:
 
@@ -179,15 +218,21 @@ GBC=Gambatte
 SFC=Snes9x
 ```
 
-Additional emulator .paks still need testing, but should function as built-in emulators.
+Overrides take precedence over the built-in mapping, so they also let you
+correct an entry that turns out to be wrong without waiting for a release.
 
 ## Installation
 
 0. Mount your SD card.
-1. Download `RetroArch Core Saves.pak.zip` from Releases. It should be named `RetroArch Core Saves.pak.zip`
-2. Copy the archive to `Tools/<PLATFORM>/Retroarch Core Saves.pak.zip`
-3. Extract the archive in place, then delete it
+1. Download the release archive. GitHub replaces spaces with periods on upload,
+   so it downloads as `RetroArch.Core.Saves.pak.zip`.
+2. Create the folder `Tools/<PLATFORM>/RetroArch Core Saves.pak` on the SD card.
+3. Extract the archive into that folder, so that `launch.sh`, `pak.json`,
+   and `bin/` sit directly inside it. 
 4. Safely unmount your SD card, insert it into device, enjoy
+
+The folder may be renamed (for example to control menu ordering); the pak reads
+its own folder name and the installed boot hook is generated to match.
 
 `<PLATFORM>` should match your device:
 
@@ -198,8 +243,8 @@ Additional emulator .paks still need testing, but should function as built-in em
 
 The platform binaries are from the MIT-licensed projects:
 
-- `josegonzalez/minui-list` 0.14.0
-- `josegonzalez/minui-presenter` 0.12.0
+- `josegonzalez/minui-list` 
+- `josegonzalez/minui-presenter` 
 - `jqlang/jq`
 
 Their license texts are included under `bin/`.
@@ -230,12 +275,16 @@ excluded. To package the current working tree instead, use:
 make dev
 ```
 
-Both targets create the sibling archive `RetroArch Core Saves.pak.zip`,
-containing the top-level `RetroArch Core Saves.pak` directory. Development-only
-findings, desktop binaries, tests, Git metadata, and `bin/SHA256SUMS` are
-excluded.
+`make release` writes `dist/RetroArch Core Saves.pak.zip`; `make dev` writes
+`RetroArch Core Saves.pak.zip` beside the pak. Both archives are flat. Development-only findings, desktop binaries, tests, Git metadata, and `bin/SHA256SUMS` are excluded.
 
 ## To Do:
 
-- Make the save converter more robust. Build report on mismatch between save format setting and actual save files found in folders.
+- Add a save-format audit: report which files under `/Saves` are `.srm`,
+  compressed `.srm`, `.sav`, or `.<ext>.sav`, flag any that disagree with the
+  configured `saveFormat`, and offer to align them. Conversion currently refuses
+  to run when it meets a file it cannot name (for example a format-`0` `.sav`
+  with no ROM extension to strip) and lists it in
+  `logs/core-saves-conversion-unresolved.txt`, but it cannot yet tell you the
+  overall shape of the save tree before you start.
 - Right now the last five backups are preserved. Need to make this user editable.

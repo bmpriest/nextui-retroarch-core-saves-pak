@@ -1,5 +1,15 @@
 #!/bin/sh
 
+# Maps an EMU_EXE value to the core's exact retro_system_info.library_name,
+# which is the folder RetroArch and MinArch use under /Saves/Cores. Every entry
+# below is taken from the core's own retro_get_system_info, not from libretro
+# .info metadata: the two disagree (freeintv reports "freeintv" while its .info
+# corename is "FreeIntv"), and only the source value decides the folder name.
+#
+# Returns non-zero for anything not listed. Callers must not fall back to the
+# EMU_EXE name -- guessing produces a folder the emulator never writes to, and
+# the saves silently diverge. Unknown cores are reported and left unmapped so
+# the user can add a mapping.conf override.
 retro_core_name_for_emu() {
 	case "$1" in
 		a5200) echo "a5200" ;;
@@ -8,14 +18,18 @@ retro_core_name_for_emu() {
 		fake08) echo "FAKE-08" ;;
 		fbneo) echo "FinalBurn Neo" ;;
 		fceumm) echo "FCEUmm" ;;
+		freeintv) echo "freeintv" ;;
 		gambatte) echo "Gambatte" ;;
 		gearcoleco) echo "Gearcoleco" ;;
 		gpsp) echo "gpSP" ;;
 		handy) echo "Handy" ;;
 		mednafen_pce_fast) echo "Beetle PCE Fast" ;;
 		mednafen_supafaust) echo "Supafaust" ;;
+		mednafen_supergrafx) echo "Beetle SuperGrafx" ;;
 		mednafen_vb) echo "Beetle VB" ;;
 		mgba) echo "mGBA" ;;
+		mupen64plus_next) echo "Mupen64Plus-Next" ;;
+		opera) echo "Opera" ;;
 		pcsx_rearmed) echo "PCSX-ReARMed" ;;
 		picodrive) echo "PicoDrive" ;;
 		pokemini) echo "PokeMini" ;;
@@ -30,8 +44,13 @@ retro_core_name_for_emu() {
 		vice_xpet) echo "VICE xpet" ;;
 		vice_xplus4) echo "VICE xplus4" ;;
 		vice_xvic) echo "VICE xvic" ;;
-		*) echo "$1" ;;
+		virtualjaguar) echo "Virtual Jaguar" ;;
+		*) return 1 ;;
 	esac
+}
+
+launch_emu_exe() {
+	sed -n 's/^[	 ]*EMU_EXE=\([^	 #]*\).*/\1/p' "$1" | tail -n 1
 }
 
 core_for_launch() {
@@ -40,24 +59,53 @@ core_for_launch() {
 	local override emu
 
 	override=$(awk -F= -v tag="$tag" '$1 == tag { print substr($0, index($0, "=") + 1); exit }' \
-		"$DIR/mapping.conf" 2>/dev/null)
+		"$MAPPING_CONF" 2>/dev/null)
 
 	if [ -n "$override" ]; then
 		echo "$override"
+		return 0
+	fi
+
+	emu=$(launch_emu_exe "$launch")
+	[ -n "$emu" ] || return 1
+
+	retro_core_name_for_emu "$emu"
+}
+
+report_unmapped_emulator() {
+	local tag="$1"
+	local launch="$2"
+	local emu
+
+	emu=$(launch_emu_exe "$launch")
+
+	if [ -z "$emu" ]; then
+		# No EMU_EXE at all means a standalone emulator pak, which keeps its own
+		# saves and is not expected to map. Informational, not actionable.
+		report_note "UNMAPPED: /Saves/$tag was left in place ($launch declares no EMU_EXE, which is normal for a standalone emulator pak)."
 		return
 	fi
 
-	emu=$(sed -n 's/^[	 ]*EMU_EXE=\([^	 #]*\).*/\1/p' "$launch" | tail -n 1)
-
-	[ -n "$emu" ] && retro_core_name_for_emu "$emu"
+	report_issue "Unrecognized emulator \"$emu\" for /Saves/$tag. Its RetroArch core folder name is unknown, so /Saves/$tag was left in place and its saves were not moved. If \"$emu\" is a libretro core, add \"$tag=<core folder name>\" to $MAPPING_CONF, reopen this pak, and choose \"Re-apply Core Save Mappings\". If it is a standalone emulator, leave it unmapped."
 }
 
+# Pass "quiet" as $2 to discover without touching the conversion report. The
+# menu needs the counts on every render; only a real operation should write a
+# report. Either way MAPPING_RESOLVED / MAPPING_MAPPABLE are left set.
+#
+# MAPPABLE counts only paks that declare an EMU_EXE, so the ratio stays
+# actionable: a standalone emulator pak can never map and is excluded rather
+# than sitting in the denominator forever.
 discover_mappings() {
 	local output="$1"
+	local quiet="${2:-}"
 	local raw="$output.raw.$$"
 	local launch tag core
 
 	: > "$raw" || return 1
+
+	MAPPING_RESOLVED=0
+	MAPPING_MAPPABLE=0
 
 	for launch in "$SDCARD_PATH/Emus/$PLATFORM"/*.pak/launch.sh "$SYSTEM_PATH/paks/Emus"/*.pak/launch.sh; do
 		[ -f "$launch" ] || continue
@@ -67,8 +115,16 @@ discover_mappings() {
 			continue
 		fi
 
-		core=$(core_for_launch "$tag" "$launch")
-		[ -n "$core" ] && printf '%s|%s\n' "$tag" "$core" >> "$raw"
+		if core=$(core_for_launch "$tag" "$launch") && [ -n "$core" ]; then
+			printf '%s|%s\n' "$tag" "$core" >> "$raw"
+			MAPPING_RESOLVED=$((MAPPING_RESOLVED + 1))
+			MAPPING_MAPPABLE=$((MAPPING_MAPPABLE + 1))
+		else
+			if [ -n "$(launch_emu_exe "$launch")" ]; then
+				MAPPING_MAPPABLE=$((MAPPING_MAPPABLE + 1))
+			fi
+			[ -n "$quiet" ] || report_unmapped_emulator "$tag" "$launch"
+		fi
 	done
 
 	sort -t '|' -k1,1 "$raw" > "$output" || {

@@ -7,7 +7,12 @@
 : "${LOGS_PATH:=$USERDATA_PATH/logs}"
 : "${MOUNTINFO_PATH:=/proc/self/mountinfo}"
 
-HOME_PATH="$SHARED_USERDATA_PATH/RetroArch Core Saves"
+# The installed boot hook exports CORE_SAVES_HOME so a renamed pak folder still
+# resolves to the state directory launch.sh actually writes to. The default only
+# covers a stock install or a direct invocation.
+: "${CORE_SAVES_HOME:=$SHARED_USERDATA_PATH/RetroArch Core Saves}"
+
+HOME_PATH="$CORE_SAVES_HOME"
 TABLE="$HOME_PATH/mounts.conf"
 ENABLED="$HOME_PATH/enabled"
 SAVES_PATH="$SDCARD_PATH/Saves"

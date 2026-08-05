@@ -58,11 +58,11 @@ migrate_tag() {
 		}
 
 		mode=copy
-		if [ -f "$dst" ] && cmp -s "$file" "$dst"; then
-			final="$dst"
-		else
-			final=$(unique_path "$dst")
+		final=$(unique_path "$dst" "$file")
 
+		# unique_path returns an existing path only when that file already holds
+		# these exact bytes, so there is nothing left to copy.
+		if [ ! -e "$final" ]; then
 			if [ "$final" != "$dst" ]; then
 				report_issue "Collision: $file was copied to $final. Review both saves and choose the correct one."
 			fi
@@ -90,7 +90,9 @@ enable_core_saves() {
 
 	discover_mappings "$tmp" || {
 		rm -f "$tmp"
-		ACTION_RESULT="No emulator mappings were found."
+		finish_report
+		ACTION_RESULT="No emulator mappings were found.
+Report: $REPORT_FILE"
 		return 1
 	}
 
@@ -156,6 +158,7 @@ Report: $REPORT_FILE"
 	show_progress "Moving saves into Cores..." 45
 
 	while IFS='|' read -r tag core; do
+		[ -n "$tag" ] && [ -n "$core" ] || continue
 		migrate_tag "$tag" "$core" "$format" || {
 			rm -f "$tmp"
 			report_issue "Migration stopped while processing /Saves/$tag."
@@ -167,6 +170,7 @@ Report: $REPORT_FILE"
 	done < "$tmp"
 
 	while IFS='|' read -r tag core; do
+		[ -n "$tag" ] && [ -n "$core" ] || continue
 		clear_mountpoint "$tag" || {
 			rm -f "$tmp"
 			report_issue "Could not empty /Saves/$tag for its bind mount."

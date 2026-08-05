@@ -22,6 +22,7 @@ SETTINGS_PATH="$SHARED_USERDATA_PATH/minuisettings.txt"
 HOME_PATH="$SHARED_USERDATA_PATH/$PAK_NAME"
 HOOK_DIR="$USERDATA_PATH/.hooks/boot.d"
 BACKUP_ROOT="$SDCARD_PATH/.core-saves-backups"
+MAPPING_CONF="$DIR/mapping.conf"
 
 MOUNT_TABLE="$HOME_PATH/mounts.conf"
 MANIFEST="$HOME_PATH/migration.manifest"
@@ -36,6 +37,7 @@ ACTION_RESULT=""
 REPORT_ISSUES=0
 
 mkdir -p "$LOGS_PATH" "$HOME_PATH" "$BACKUP_ROOT"
+[ ! -f "$LOG_FILE" ] || mv "$LOG_FILE" "$LOG_FILE.1"
 : > "$LOG_FILE"
 
 export HOME="$HOME_PATH"
@@ -127,6 +129,31 @@ has_active_mounts() {
 	return 1
 }
 
+# Sets MAPPING_SUMMARY ("resolved/mappable") and MAPPING_STALE. Stale means
+# re-running the migration would actually change something: either an installed
+# emulator is still unmapped, or the live mount table no longer matches what
+# discovery now produces (a pak was installed or removed, or mapping.conf
+# changed). Runs discovery quietly so rendering the menu never writes a report.
+compute_mapping_status() {
+	local table="/tmp/${PAK_NAME}-mapping-check.conf"
+
+	MAPPING_RESOLVED=0
+	MAPPING_MAPPABLE=0
+	MAPPING_STALE=false
+
+	rm -f "$table"
+	discover_mappings "$table" quiet || :
+
+	if [ "$MAPPING_RESOLVED" != "$MAPPING_MAPPABLE" ]; then
+		MAPPING_STALE=true
+	elif [ -f "$ENABLED_FILE" ] && ! cmp -s "$table" "$MOUNT_TABLE"; then
+		MAPPING_STALE=true
+	fi
+
+	MAPPING_SUMMARY="$MAPPING_RESOLVED/$MAPPING_MAPPABLE"
+	rm -f "$table"
+}
+
 current_settings() {
 	local minui_list_file="/tmp/${PAK_NAME}-settings.json"
 	local mount_rows="/tmp/${PAK_NAME}-mount-rows.tsv"
@@ -148,6 +175,7 @@ current_settings() {
 	mounts=$(mount_status)
 
 	has_active_mounts && mounts_selectable=true
+	compute_mapping_status
 	write_mount_rows "$mount_rows" || return 1
 
 	jq -Rsc '
@@ -161,20 +189,35 @@ current_settings() {
 		--arg mounts "$mounts" \
 		--argjson active "$active" \
 		--argjson mounts_selectable "$mounts_selectable" \
+		--arg mapping_summary "$MAPPING_SUMMARY" \
+		--argjson stale "$MAPPING_STALE" \
 		--slurpfile mount_rows "$mount_rows_json" \
 		'.settings[1].selected = $format
 		| .settings[2].selected = $location
-		| .settings[3].options = [$mounts]
-		| .settings[3].features.unselectable = false
-		| .settings[3].features.show_confirm = true
-		| if $active then del(.settings[5]) else del(.settings[6]) end
-		| .settings[5].features.unselectable = false
-		| del(.settings[5].features.disabled)
+		| .settings[3].options = [$mapping_summary]
+		| .settings[4].options = [$mounts]
+		| .settings[4].features.unselectable = ($mounts_selectable | not)
+		| if $mounts_selectable
+			then .settings[4].features.show_confirm = true
+			else .settings[4].features |= del(.show_confirm) end
+		| if $active then
+			(if $stale
+				then .settings[6].name = "Re-apply Core Save Mappings"
+				else del(.settings[6]) end)
+			else del(.settings[7]) end
+		| .settings[6].features.unselectable = false
+		| if (.settings | length) > 7
+			then .settings[7].features.unselectable = false
+			else . end
 		| .conversions[1].name = .conversions[$format + 2].name
 		| .mounts[1] as $mount_template
 		| .mounts = [.mounts[0]] + ($mount_rows[0]
 			| map($mount_template * {name: .[0], options: [.[1]]}))' \
-		"$DIR/settings.json" > "$minui_list_file"
+		"$DIR/settings.json" > "$minui_list_file" || {
+		rm -f "$mount_rows" "$mount_rows_json" "$minui_list_file"
+		log "Could not render the settings menu."
+		return 1
+	}
 
 	rm -f "$mount_rows" "$mount_rows_json"
 	cat "$minui_list_file"
@@ -193,7 +236,7 @@ main_screen() {
 	minui-list --disable-auto-sleep --file "$minui_list_file" --format json \
 		--title "$HUMAN_READABLE_NAME" --title-alignment center --confirm-text "SELECT" \
 		--action-button "X" --action-text "CONVERT SAVES" \
-		--cancel-text "EXIT" --item-key settings --selected 5 \
+		--cancel-text "EXIT" --item-key settings --selected 6 \
 		--write-location "$minui_list_write_location" >> "$LOG_FILE" 2>&1
 	exit_code=$?
 
@@ -277,6 +320,7 @@ cleanup() {
 	rm -f "/tmp/${PAK_NAME}-mount-rows.tsv"
 	rm -f "/tmp/${PAK_NAME}-mount-rows.json"
 	rm -f "/tmp/${PAK_NAME}-mounts.json"
+	rm -f "/tmp/${PAK_NAME}-mapping-check.conf"
 }
 
 run_action() {
@@ -288,6 +332,10 @@ run_action() {
 	case "$action" in
 		"Convert to RetroArch Core Saves")
 			confirm "Back up saves, move mapped systems into /Saves/Cores, and enable boot mounts?" || return
+			enable_core_saves
+			;;
+		"Re-apply Core Save Mappings")
+			confirm "Re-check installed emulators and mapping.conf, then move any newly mapped systems into /Saves/Cores? Saves already in /Saves/Cores are left where they are." || return
 			enable_core_saves
 			;;
 		"Revert to NextUI Saves")
@@ -309,6 +357,13 @@ main() {
 	trap cleanup EXIT INT TERM HUP QUIT
 
 	case "$PLATFORM" in tg5040|tg5050) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
+
+	# Restore executable bits before anything needs the UI or the converter,
+	# including the recovery pass below.
+	for executable in minui-list minui-presenter save-rzip jq; do
+		chmod +x "$DIR/bin/$PLATFORM/$executable" 2>/dev/null || true
+	done
+
 	mkdir -p "$SAVES_PATH"
 
 	if [ -f "$OPERATION_JOURNAL" ]; then
@@ -317,10 +372,6 @@ main() {
 		present "$ACTION_RESULT"
 		[ "$rc" -eq 0 ] || return "$rc"
 	fi
-
-	for executable in minui-list minui-presenter save-rzip jq; do
-		chmod +x "$DIR/bin/$PLATFORM/$executable" 2>/dev/null || true
-	done
 
 	command -v minui-list >/dev/null 2>&1 &&
 		command -v jq >/dev/null 2>&1 || {

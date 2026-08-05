@@ -41,10 +41,17 @@ legacy_name_for_file() {
 	echo "$base"
 }
 
+# Returns a path to write $dst to. With a $source, an existing file that already
+# holds those exact bytes is returned instead of a fresh conflict name, so
+# repeated migrations reuse the copy they made last time rather than stacking up
+# identical core-conflict-N duplicates. Callers distinguish the two outcomes with
+# [ -e "$result" ]: an existing path means "already there, nothing to copy".
 unique_path() {
 	local dst="$1"
+	local source="${2:-}"
 	local dir base stem ext n candidate
 	if [ ! -e "$dst" ]; then echo "$dst"; return; fi
+	if [ -n "$source" ] && cmp -s "$source" "$dst"; then echo "$dst"; return; fi
 	dir=$(dirname "$dst")
 	base=$(basename "$dst")
 	stem=${base%.*}
@@ -57,6 +64,10 @@ unique_path() {
 			candidate="$dir/$base.core-conflict-$n"
 		fi
 		if [ ! -e "$candidate" ]; then echo "$candidate"; return; fi
+		if [ -n "$source" ] && cmp -s "$source" "$candidate"; then
+			echo "$candidate"
+			return
+		fi
 		n=$((n + 1))
 	done
 }
@@ -89,7 +100,11 @@ write_file_list() {
 
 clear_mountpoint() {
 	local tag="$1"
-	local path="$SAVES_PATH/$tag"
+	local path
+	# Without this guard an empty tag would expand to rm -rf "$SAVES_PATH"/*
+	# and take the whole save tree, Cores included.
+	[ -n "$tag" ] || return 1
+	path="$SAVES_PATH/$tag"
 	[ -d "$path" ] || {
 		mkdir -p "$path"
 		return
@@ -133,24 +148,36 @@ conversion_find_files() {
 	fi
 }
 
+# Indexes every ROM once as "<stem>\t<filename>", where <stem> is the awk
+# equivalent of strip_short_ext. Building this up front replaces a full ROM-tree
+# walk plus a basename fork per ROM for every save file being converted.
+build_rom_stem_index() {
+	local output="$1"
+	find "$ROMS_PATH" -type f 2>/dev/null |
+		awk -F/ '
+			{
+				base = $NF
+				n = split(base, parts, ".")
+				ext = (n < 2) ? "" : parts[n]
+				if (n < 2 || length(ext) < 1 || length(ext) > 4) {
+					print base "\t" base
+					next
+				}
+				print substr(base, 1, length(base) - length(ext) - 1) "\t" base
+			}
+		' | LC_ALL=C sort -u > "$output"
+}
+
 conversion_minui_name() {
 	local stem="$1"
-	local candidates="$HOME_PATH/conversion-roms.$$"
-	local rom base stripped count
-	: > "$candidates" || return 1
-	find "$ROMS_PATH" -type f 2>/dev/null | while IFS= read -r rom; do
-		base=$(basename "$rom")
-		stripped=$(strip_short_ext "$base")
-		[ "$stripped" = "$stem" ] && echo "$base"
-	done | sort -u > "$candidates"
-	count=$(wc -l < "$candidates" | tr -d ' ')
-	if [ "$count" = 1 ]; then
-		cat "$candidates"
-		rm -f "$candidates"
-		return 0
-	fi
-	rm -f "$candidates"
-	return 1
+	local index="$2"
+	local matches count
+	[ -f "$index" ] || return 1
+	matches=$(awk -F'\t' -v stem="$stem" '$1 == stem { print $2 }' "$index")
+	[ -n "$matches" ] || return 1
+	count=$(printf '%s\n' "$matches" | wc -l | tr -d ' ')
+	[ "$count" = 1 ] || return 1
+	printf '%s\n' "$matches"
 }
 
 build_conversion_plan() {
@@ -159,6 +186,7 @@ build_conversion_plan() {
 	local target_format="$3"
 	local plan="$4"
 	local unresolved="$5"
+	local rom_index="$plan.roms"
 	local pattern file rel parent base without_save stem stripped
 	local destination_name destination mode minui_name
 	: > "$plan"
@@ -169,6 +197,13 @@ build_conversion_plan() {
 		*) return 1 ;;
 	esac
 
+	if [ "$target_format" = 0 ]; then
+		build_rom_stem_index "$rom_index" || {
+			rm -f "$rom_index"
+			return 1
+		}
+	fi
+
 	conversion_find_files "$root" "$pattern" | while IFS= read -r file; do
 		rel=${file#"$root"/}
 		parent=$(dirname "$file")
@@ -177,7 +212,11 @@ build_conversion_plan() {
 			0)
 				without_save=${base%.sav}
 				stripped=$(strip_short_ext "$without_save")
-				[ "$stripped" != "$without_save" ] || continue
+				if [ "$stripped" = "$without_save" ]; then
+					printf 'No ROM extension to convert from: %s\n' "$rel" \
+						>> "$unresolved"
+					continue
+				fi
 				stem="$stripped"
 				;;
 			2) stem=${base%.sav} ;;
@@ -186,9 +225,9 @@ build_conversion_plan() {
 
 		case "$target_format" in
 			0)
-				minui_name=$(conversion_minui_name "$stem")
+				minui_name=$(conversion_minui_name "$stem" "$rom_index")
 				if [ -z "$minui_name" ]; then
-					echo "$rel" >> "$unresolved"
+					printf 'No single matching ROM for: %s\n' "$rel" >> "$unresolved"
 					continue
 				fi
 				destination_name="$minui_name.sav"
@@ -205,6 +244,8 @@ build_conversion_plan() {
 		if [ "$target_format" = 1 ]; then mode=encode; else mode=decode; fi
 		printf '%s\t%s\t%s\n' "$file" "$destination" "$mode" >> "$plan"
 	done
+
+	rm -f "$rom_index"
 
 	[ ! -s "$unresolved" ] || return 1
 	if cut -f2 "$plan" | sort | uniq -d | grep -q .; then

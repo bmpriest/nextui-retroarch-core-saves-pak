@@ -35,6 +35,34 @@ prune_backups() {
 	rm -f "$list"
 }
 
+# prune_backups deliberately ignores *.incomplete directories so a backup in
+# progress is never counted or deleted. That leaves a full copy of the save tree
+# behind whenever an operation dies mid-copy, since the next run picks a new
+# timestamped name. Only one instance of the pak runs at a time, so any
+# *.incomplete other than the one named by $keep is abandoned and reclaimable.
+reclaim_incomplete_backups() {
+	local keep="${1:-}"
+	local list="$BACKUP_ROOT/.incomplete-list.$$"
+	local backup
+	find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name '*.incomplete' \
+		-print 2>/dev/null > "$list" || :
+	while IFS= read -r backup; do
+		[ -n "$backup" ] || continue
+		[ "$backup" = "$keep" ] && continue
+		case "$backup" in
+			"$BACKUP_ROOT"/*.incomplete) rm -rf "$backup" || {
+				rm -f "$list"
+				return 1
+			} ;;
+			*)
+				rm -f "$list"
+				return 1
+				;;
+		esac
+	done < "$list"
+	rm -f "$list"
+}
+
 make_backup() {
 	local label="$1"
 	local ts backup incomplete n
@@ -47,6 +75,8 @@ make_backup() {
 	done
 	incomplete="$backup.incomplete"
 	rm -rf "$incomplete"
+	reclaim_incomplete_backups "$incomplete" ||
+		log "Could not reclaim abandoned partial backups."
 	mkdir -p "$incomplete/Saves" || return 1
 	cp -a "$SAVES_PATH"/. "$incomplete/Saves"/ || {
 		rm -rf "$incomplete"

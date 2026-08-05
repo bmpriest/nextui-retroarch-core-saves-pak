@@ -57,6 +57,18 @@ write_emulator() {
 	printf 'EMU_EXE=%s\n' "$emu" > "$path/launch.sh"
 }
 
+# Builds a stand-in pak directory under a different folder name, linking back to
+# the real sources. Used to prove nothing derives the state directory from a
+# hardcoded pak name.
+link_renamed_pak() {
+	renamed="$1"
+	mkdir -p "$renamed"
+	ln -s "$PAK_DIR/bin" "$renamed/bin"
+	ln -s "$PAK_DIR/launch.sh" "$renamed/launch.sh"
+	ln -s "$PAK_DIR/settings.json" "$renamed/settings.json"
+	ln -s "$PAK_DIR/mapping.conf" "$renamed/mapping.conf"
+}
+
 load_fixture() {
 	name="$1"
 	SDCARD_PATH="$TEST_ROOT/$name/sd"
@@ -65,7 +77,7 @@ load_fixture() {
 	SHARED_USERDATA_PATH="$SDCARD_PATH/.userdata/shared"
 	USERDATA_PATH="$SDCARD_PATH/.userdata/$PLATFORM"
 	LOGS_PATH="$USERDATA_PATH/logs"
-	CORE_SAVES_DIR="$PAK_DIR"
+	CORE_SAVES_DIR="${2:-$PAK_DIR}"
 	CORE_SAVES_SOURCE_ONLY=1
 	export SDCARD_PATH PLATFORM SYSTEM_PATH SHARED_USERDATA_PATH USERDATA_PATH
 	export LOGS_PATH CORE_SAVES_DIR CORE_SAVES_SOURCE_ONLY
@@ -76,7 +88,7 @@ load_fixture() {
 	write_emulator "$SDCARD_PATH" GBC gambatte
 
 	# shellcheck source=../../launch.sh
-	. "$PAK_DIR/launch.sh"
+	. "$CORE_SAVES_DIR/launch.sh"
 	show_progress() { :; }
 	run_mounts() { :; }
 }
@@ -115,11 +127,14 @@ test_minui_to_core_and_generic_restore() (
 		jq -e '
 			.settings[1].selected == 2 and
 			.settings[2].selected == 1 and
-			.settings[3].options == ["0/3 mounted"] and
-			.settings[3].features.unselectable == true and
-			(.settings | length) == 6 and
-			.settings[5].name == "Revert to NextUI Saves" and
-			.settings[5].features.unselectable == false and
+			.settings[3].name == "> Mappings:" and
+			.settings[3].options == ["3/3"] and
+			.settings[4].options == ["0/3 mounted"] and
+			.settings[4].features.unselectable == true and
+			(.settings[4].features | has("show_confirm") | not) and
+			(.settings | length) == 7 and
+			.settings[6].name == "Revert to NextUI Saves" and
+			.settings[6].features.unselectable == false and
 			.conversions[1].name == ".srm" and
 			(has("selected") | not)
 		' "$TEST_ROOT/menu-test.json" >/dev/null ||
@@ -379,11 +394,13 @@ test_inactive_menu_state() (
 	jq -e '
 		.settings[1].selected == 1 and
 		.settings[2].selected == 0 and
-		.settings[3].options == ["0 mounted"] and
-		.settings[3].features.unselectable == true and
-		(.settings | length) == 6 and
-		.settings[5].name == "Convert to RetroArch Core Saves" and
-		.settings[5].features.unselectable == false and
+		.settings[3].options == ["3/3"] and
+		.settings[4].options == ["0 mounted"] and
+		.settings[4].features.unselectable == true and
+		(.settings[4].features | has("show_confirm") | not) and
+		(.settings | length) == 7 and
+		.settings[6].name == "Convert to RetroArch Core Saves" and
+		.settings[6].features.unselectable == false and
 		.conversions[1].name == ".<pak>.sav" and
 		(has("selected") | not)
 	' "$TEST_ROOT/inactive-menu.json" >/dev/null ||
@@ -411,15 +428,16 @@ test_active_mount_rows_include_unmapped_folders() (
 
 	current_settings > "$TEST_ROOT/active-mount-rows.json"
 	jq -e '
-		.settings[3].name == "> Mounts:" and
-		.settings[3].options == ["4/4 mounted"] and
-		.settings[3].selected == 0 and
-		.settings[3].features.unselectable == true and
-		(.settings[3].features | has("confirm_text") | not) and
-		.settings[4].name == "View Mounts" and
-		.settings[4].features.alignment == "right" and
+		.settings[4].name == "> Mounts:" and
+		.settings[4].options == ["4/4 mounted"] and
+		.settings[4].selected == 0 and
 		.settings[4].features.unselectable == false and
-		.settings[4].features.confirm_text == "VIEW" and
+		.settings[4].features.show_confirm == true and
+		.settings[4].features.confirm_text == "View" and
+		(.settings | length) == 8 and
+		.settings[5].name == " " and
+		.settings[6].name == "Re-apply Core Save Mappings" and
+		.settings[7].name == "Revert to NextUI Saves" and
 		(.mounts | length) == 7 and
 		([.mounts[] | select(.name == " /FC" and .options[0] == " /FCEUmm")] | length) == 1 and
 		([.mounts[] | select(.name == " /GB" and .options[0] == " /Gambatte")] | length) == 1 and
@@ -751,6 +769,275 @@ test_active_conversion_warns_and_only_converts_mapped_cores() (
 	assert_contains "$SETTINGS_PATH" "saveFormat=3"
 )
 
+test_mounts_row_is_locked_without_active_mounts() (
+	load_fixture stale-mount-table
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA" "$CORES_PATH/gpSP"
+	# A revert leaves the mount table behind but clears the enabled marker.
+	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
+	rm -f "$ENABLED_FILE"
+
+	current_settings > "$TEST_ROOT/stale-mount-table.json"
+	jq -e '
+		.settings[4].name == "> Mounts:" and
+		.settings[4].options == ["0 mounted"] and
+		.settings[4].features.unselectable == true and
+		(.settings[4].features | has("show_confirm") | not)
+	' "$TEST_ROOT/stale-mount-table.json" >/dev/null ||
+		fail "stale mount table is still reachable from the menu"
+)
+
+test_boot_hook_honors_a_renamed_pak_folder() (
+	renamed="$TEST_ROOT/renamed/01 Core Saves.pak"
+	link_renamed_pak "$renamed"
+	load_fixture renamed "$renamed"
+	[ "$PAK_NAME" = "01 Core Saves" ] || fail "fixture did not rename the pak"
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'save' > "$SAVES_PATH/GBA/Game.srm"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	mkdir -p "$TEST_ROOT/renamed-bin"
+	FAKE_MOUNT_LOG="$TEST_ROOT/renamed-mount-call.txt"
+	export FAKE_MOUNT_LOG
+	{
+		echo '#!/bin/sh'
+		echo 'printf "%s\n" "$*" >> "$FAKE_MOUNT_LOG"'
+	} > "$TEST_ROOT/renamed-bin/mount"
+	chmod +x "$TEST_ROOT/renamed-bin/mount"
+	PATH="$TEST_ROOT/renamed-bin:$PATH"
+	export PATH
+
+	# Boot runs the installed hook with no knowledge of the pak folder.
+	sh "$HOOK_FILE" || fail "boot hook failed for a renamed pak folder"
+	assert_file "$FAKE_MOUNT_LOG"
+	assert_contains "$FAKE_MOUNT_LOG" \
+		"-o bind $CORES_PATH/gpSP $SAVES_PATH/GBA"
+)
+
+test_reenable_reuses_an_existing_conflict_copy() (
+	load_fixture conflict-reuse
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'original' > "$SAVES_PATH/GBA/Game.srm"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+	restore_to_legacy current >/dev/null || fail "$ACTION_RESULT"
+	printf 'updated' > "$SAVES_PATH/GBA/Game.srm"
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+	assert_file "$CORES_PATH/gpSP/Game.core-conflict-1.srm"
+
+	# Same bytes as the conflict copy made above; must not stack another one.
+	restore_to_legacy current >/dev/null || fail "$ACTION_RESULT"
+	printf 'updated' > "$SAVES_PATH/GBA/Game.srm"
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	assert_absent "$CORES_PATH/gpSP/Game.core-conflict-2.srm"
+	[ "$(cat "$CORES_PATH/gpSP/Game.srm")" = "original" ] ||
+		fail "primary save changed while reusing a conflict copy"
+	[ "$(cat "$CORES_PATH/gpSP/Game.core-conflict-1.srm")" = "updated" ] ||
+		fail "existing conflict copy changed"
+	assert_contains "$REPORT_FILE" "Issues requiring attention: 0"
+)
+
+test_conversion_reports_saves_without_a_rom_extension() (
+	load_fixture no-rom-extension
+	printf 'saveFormat=0\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'good' > "$SAVES_PATH/GBA/Proper.gba.sav"
+	printf 'orphan' > "$SAVES_PATH/GBA/NoInnerExt.sav"
+
+	if convert_saves_in_place 3; then
+		fail "conversion silently skipped a save it could not name"
+	fi
+	assert_file "$SAVES_PATH/GBA/Proper.gba.sav"
+	assert_file "$SAVES_PATH/GBA/NoInnerExt.sav"
+	assert_absent "$SAVES_PATH/GBA/Proper.srm"
+	assert_contains "$SETTINGS_PATH" "saveFormat=0"
+	assert_contains "$LOGS_PATH/core-saves-conversion-unresolved.txt" \
+		"GBA/NoInnerExt.sav"
+	case "$ACTION_RESULT" in
+		*"Conversion stopped before changing files"*) ;;
+		*) fail "unnameable save was not reported: $ACTION_RESULT" ;;
+	esac
+)
+
+test_conversion_to_minui_matches_roms_once() (
+	load_fixture minui-target
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA" "$ROMS_PATH/Game Boy Advance (GBA)"
+	printf 'rom' > "$ROMS_PATH/Game Boy Advance (GBA)/Unique.gba"
+	printf 'rom' > "$ROMS_PATH/Game Boy Advance (GBA)/Doubled.gba"
+	printf 'rom' > "$ROMS_PATH/Game Boy Advance (GBA)/Doubled.gb"
+	printf 'save' > "$SAVES_PATH/GBA/Unique.srm"
+
+	convert_saves_in_place 0 || fail "$ACTION_RESULT"
+	assert_file "$SAVES_PATH/GBA/Unique.gba.sav"
+	assert_absent "$SAVES_PATH/GBA/Unique.srm"
+	assert_contains "$SETTINGS_PATH" "saveFormat=0"
+
+	# Two ROMs share a stem, so the target name is ambiguous.
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	printf 'save' > "$SAVES_PATH/GBA/Doubled.srm"
+	rm -f "$SAVES_PATH/GBA/Unique.gba.sav"
+	if convert_saves_in_place 0; then
+		fail "conversion accepted an ambiguous ROM match"
+	fi
+	assert_file "$SAVES_PATH/GBA/Doubled.srm"
+	assert_contains "$LOGS_PATH/core-saves-conversion-unresolved.txt" \
+		"GBA/Doubled.srm"
+)
+
+test_abandoned_partial_backups_are_reclaimed() (
+	load_fixture incomplete-backups
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'save' > "$SAVES_PATH/GBA/Game.sav"
+	mkdir -p "$BACKUP_ROOT/19700101-000000-crashed.incomplete/Saves"
+	printf 'junk' > "$BACKUP_ROOT/19700101-000000-crashed.incomplete/Saves/Old.sav"
+
+	make_backup reclaim >/dev/null || fail "could not make backup"
+
+	assert_absent "$BACKUP_ROOT/19700101-000000-crashed.incomplete"
+	count=$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+	[ "$count" = 1 ] || fail "expected 1 backup directory, got $count"
+)
+
+test_unrecognized_emulator_is_reported_not_guessed() (
+	load_fixture unknown-emu
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	# A libretro core the table does not know, plus a standalone pak with no
+	# EMU_EXE at all.
+	write_emulator "$SDCARD_PATH" WSC mednafen_wswan
+	mkdir -p "$SDCARD_PATH/.system/$PLATFORM/paks/Emus/PSP.pak"
+	printf '#!/bin/sh\necho standalone\n' \
+		> "$SDCARD_PATH/.system/$PLATFORM/paks/Emus/PSP.pak/launch.sh"
+	mkdir -p "$SAVES_PATH/GBA" "$SAVES_PATH/WSC" "$SAVES_PATH/PSP"
+	printf 'gba' > "$SAVES_PATH/GBA/Game.srm"
+	printf 'wsc' > "$SAVES_PATH/WSC/Game.srm"
+	printf 'psp' > "$SAVES_PATH/PSP/Game.srm"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	# The known core migrates.
+	assert_file "$CORES_PATH/gpSP/Game.srm"
+	# The unknown ones are left completely alone, not guessed into a folder
+	# named after EMU_EXE.
+	assert_absent "$CORES_PATH/mednafen_wswan"
+	assert_absent "$CORES_PATH/PSP"
+	assert_file "$SAVES_PATH/WSC/Game.srm"
+	assert_file "$SAVES_PATH/PSP/Game.srm"
+	grep -q 'WSC|' "$MOUNT_TABLE" && fail "unknown core was added to the mount table"
+	grep -q 'PSP|' "$MOUNT_TABLE" && fail "standalone pak was added to the mount table"
+
+	# Unknown EMU_EXE is actionable, so it counts as an issue and names the
+	# override file; a pak with no EMU_EXE is merely noted.
+	assert_contains "$REPORT_FILE" 'Unrecognized emulator "mednafen_wswan" for /Saves/WSC'
+	assert_contains "$REPORT_FILE" "$MAPPING_CONF"
+	assert_contains "$REPORT_FILE" "UNMAPPED: /Saves/PSP was left in place"
+	assert_contains "$REPORT_FILE" "Issues requiring attention: 1"
+	case "$ACTION_RESULT" in
+		*"1 issue(s) need attention"*) ;;
+		*) fail "unmapped emulator was not surfaced to the user: $ACTION_RESULT" ;;
+	esac
+)
+
+test_reapply_row_completes_partial_mappings() (
+	load_fixture partial-mappings
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	write_emulator "$SDCARD_PATH" WSC mednafen_wswan
+	mkdir -p "$SDCARD_PATH/.system/$PLATFORM/paks/Emus/PSP.pak"
+	printf '#!/bin/sh\necho standalone\n' \
+		> "$SDCARD_PATH/.system/$PLATFORM/paks/Emus/PSP.pak/launch.sh"
+	mkdir -p "$SAVES_PATH/GBA" "$SAVES_PATH/WSC"
+	printf 'gba' > "$SAVES_PATH/GBA/Game.srm"
+	printf 'wsc' > "$SAVES_PATH/WSC/Wonder.srm"
+	MAPPING_CONF="$TEST_ROOT/partial-mapping.conf"
+	: > "$MAPPING_CONF"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	# 4 paks declare EMU_EXE (GBA, GB, GBC, WSC); WSC is unknown. The standalone
+	# PSP pak declares none and is excluded from the ratio entirely.
+	current_settings > "$TEST_ROOT/partial-before.json"
+	jq -e '
+		.settings[3].name == "> Mappings:" and
+		.settings[3].options == ["3/4"] and
+		(.settings | length) == 8 and
+		.settings[6].name == "Re-apply Core Save Mappings" and
+		.settings[6].features.unselectable == false and
+		.settings[7].name == "Revert to NextUI Saves" and
+		.settings[7].features.unselectable == false
+	' "$TEST_ROOT/partial-before.json" >/dev/null ||
+		fail "incomplete mappings did not surface the re-apply action"
+
+	# The user fills in the override the report pointed them at. The row must
+	# stay until the mapping is actually applied, not vanish on edit.
+	printf 'WSC=Beetle Cygne\n' > "$MAPPING_CONF"
+	current_settings > "$TEST_ROOT/partial-pending.json"
+	jq -e '
+		.settings[3].options == ["4/4"] and
+		(.settings | length) == 8 and
+		.settings[6].name == "Re-apply Core Save Mappings"
+	' "$TEST_ROOT/partial-pending.json" >/dev/null ||
+		fail "re-apply action vanished before the mapping was applied"
+
+	# Selecting the row runs the same migration.
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	assert_file "$CORES_PATH/Beetle Cygne/Wonder.srm"
+	assert_file "$CORES_PATH/gpSP/Game.srm"
+	[ "$(cat "$CORES_PATH/gpSP/Game.srm")" = "gba" ] ||
+		fail "already-migrated save changed during re-apply"
+	assert_absent "$SAVES_PATH/WSC/Wonder.srm"
+	assert_contains "$MOUNT_TABLE" "WSC|Beetle Cygne"
+	[ "$(find "$CORES_PATH" -name '*core-conflict*' | wc -l | tr -d ' ')" = 0 ] ||
+		fail "re-apply created conflict copies"
+
+	current_settings > "$TEST_ROOT/partial-after.json"
+	jq -e '
+		.settings[3].options == ["4/4"] and
+		(.settings | length) == 7 and
+		.settings[6].name == "Revert to NextUI Saves"
+	' "$TEST_ROOT/partial-after.json" >/dev/null ||
+		fail "re-apply action persisted after mappings were complete"
+)
+
+test_mapping_conf_override_maps_an_unknown_core() (
+	load_fixture override-emu
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	write_emulator "$SDCARD_PATH" WSC mednafen_wswan
+	mkdir -p "$SAVES_PATH/WSC"
+	printf 'wsc' > "$SAVES_PATH/WSC/Game.srm"
+	MAPPING_CONF="$TEST_ROOT/override-mapping.conf"
+	printf '# comment\nWSC=Beetle Cygne\n' > "$MAPPING_CONF"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	assert_file "$CORES_PATH/Beetle Cygne/Game.srm"
+	assert_contains "$MOUNT_TABLE" "WSC|Beetle Cygne"
+	assert_contains "$REPORT_FILE" "Issues requiring attention: 0"
+)
+
+test_unknown_core_names_are_never_invented() (
+	load_fixture no-guess
+	retro_core_name_for_emu some_unshipped_core &&
+		fail "unknown EMU_EXE was mapped instead of rejected"
+	[ -z "$(retro_core_name_for_emu some_unshipped_core)" ] ||
+		fail "unknown EMU_EXE produced a core folder name"
+	[ "$(retro_core_name_for_emu freeintv)" = "freeintv" ] ||
+		fail "freeintv must use its source library_name, not its .info corename"
+	[ "$(retro_core_name_for_emu opera)" = "Opera" ] ||
+		fail "opera library name mapping is incorrect"
+	[ "$(retro_core_name_for_emu virtualjaguar)" = "Virtual Jaguar" ] ||
+		fail "virtualjaguar library name mapping is incorrect"
+	[ "$(retro_core_name_for_emu mednafen_supergrafx)" = "Beetle SuperGrafx" ] ||
+		fail "mednafen_supergrafx library name mapping is incorrect"
+	[ "$(retro_core_name_for_emu mupen64plus_next)" = "Mupen64Plus-Next" ] ||
+		fail "mupen64plus_next library name mapping is incorrect"
+	return 0
+)
+
 test_minui_to_core_and_generic_restore
 test_generic_to_core
 test_reenable_deduplicates_identical_saves
@@ -773,4 +1060,14 @@ test_interrupted_restore_is_recovered
 test_recovery_keeps_journal_when_remount_fails
 test_active_conversion_warns_and_only_converts_mapped_cores
 test_backup_retention
+test_mounts_row_is_locked_without_active_mounts
+test_boot_hook_honors_a_renamed_pak_folder
+test_reenable_reuses_an_existing_conflict_copy
+test_conversion_reports_saves_without_a_rom_extension
+test_conversion_to_minui_matches_roms_once
+test_abandoned_partial_backups_are_reclaimed
+test_unrecognized_emulator_is_reported_not_guessed
+test_reapply_row_completes_partial_mappings
+test_mapping_conf_override_maps_an_unknown_core
+test_unknown_core_names_are_never_invented
 echo "RetroArch Core Saves tests passed"

@@ -223,6 +223,8 @@ audit_operation() {
 	report_note "RECOVERY: Rolled back interrupted $operation operation."
 	rm -f "$OPERATION_JOURNAL"
 	rm -rf "$OPERATION_STATE"
+	reclaim_incomplete_backups ||
+		log "Could not reclaim abandoned partial backups after recovery."
 	sync
 	ACTION_RESULT="Recovered an interrupted $operation operation.
 The previous save layout and settings were restored."
@@ -248,5 +250,7 @@ commit_operation() {
 	rm -f "$OPERATION_JOURNAL" || return 1
 	rm -rf "$OPERATION_STATE" ||
 		log "Committed operation left stale transaction state at $OPERATION_STATE."
+	reclaim_incomplete_backups ||
+		log "Committed operation left abandoned partial backups in $BACKUP_ROOT."
 	return 0
 }
