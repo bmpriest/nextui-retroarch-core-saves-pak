@@ -1,5 +1,11 @@
-/Findings.md export-ignore
 /tests/ export-ignore
+/screenshots/ export-ignore
 /bin/desktop/ export-ignore
 /bin/tests/ export-ignore
 /bin/SHA256SUMS export-ignore
+/Findings.md export-ignore
+/__pychache__ export-ignore
+/Makefile export-ignore
+/.gitignore export-ignore
+/.gitattributes export-ignore
+/dist export-ignore

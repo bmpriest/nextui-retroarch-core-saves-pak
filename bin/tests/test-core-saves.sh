@@ -156,6 +156,33 @@ test_generic_to_core() (
 		fail "raw payload changed during generic migration"
 )
 
+test_reenable_deduplicates_identical_saves() (
+	load_fixture reenable
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'unchanged-save' > "$SAVES_PATH/GBA/Unchanged.srm"
+	printf 'original-save' > "$SAVES_PATH/GBA/Changed.srm"
+
+	enable_core_saves || fail "$ACTION_RESULT"
+	restore_to_legacy current || fail "$ACTION_RESULT"
+	printf 'updated-save' > "$SAVES_PATH/GBA/Changed.srm"
+	enable_core_saves || fail "$ACTION_RESULT"
+
+	assert_file "$CORES_PATH/gpSP/Unchanged.srm"
+	assert_absent "$CORES_PATH/gpSP/Unchanged.core-conflict-1.srm"
+	[ "$(cat "$CORES_PATH/gpSP/Unchanged.srm")" = "unchanged-save" ] ||
+		fail "unchanged save changed during re-enable"
+	assert_file "$CORES_PATH/gpSP/Changed.srm"
+	assert_file "$CORES_PATH/gpSP/Changed.core-conflict-1.srm"
+	[ "$(cat "$CORES_PATH/gpSP/Changed.srm")" = "original-save" ] ||
+		fail "original conflicting save changed during re-enable"
+	[ "$(cat "$CORES_PATH/gpSP/Changed.core-conflict-1.srm")" = "updated-save" ] ||
+		fail "updated conflicting save was not preserved"
+	assert_contains "$MANIFEST" "gpSP/Unchanged.srm|GBA/Unchanged.srm"
+	assert_contains "$REPORT_FILE" "Changed.core-conflict-1.srm"
+	assert_contains "$REPORT_FILE" "Issues requiring attention: 1"
+)
+
 test_rzip_to_generic_conversion() (
 	load_fixture rzip
 	printf 'saveFormat=1\n' > "$SETTINGS_PATH"
@@ -726,6 +753,7 @@ test_active_conversion_warns_and_only_converts_mapped_cores() (
 
 test_minui_to_core_and_generic_restore
 test_generic_to_core
+test_reenable_deduplicates_identical_saves
 test_rzip_to_generic_conversion
 test_malformed_rzip_restore_rolls_back
 test_shared_core_collision_is_reported_and_preserved

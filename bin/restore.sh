@@ -17,6 +17,7 @@ restore_to_legacy() {
 		target_format="$current_format"
 	fi
 	start_report "Restore saves to /Saves as $(save_format_name "$target_format")"
+	show_progress "Discovering emulator mappings..." 5
 	mappings="$HOME_PATH/restore-mappings.$$"
 	plan="$HOME_PATH/restore-plan.$$"
 	rom_index="$HOME_PATH/restore-roms.$$"
@@ -30,6 +31,7 @@ No installed emulator mappings were found.
 Report: $REPORT_FILE"
 		return 1
 	fi
+	show_progress "Planning save restore..." 15
 	if ! build_restore_plan "$mappings" "$rom_index" "$plan"; then
 		rm -f "$mappings" "$plan" "$rom_index" "$tags"
 		finish_report
@@ -62,6 +64,7 @@ Report: $REPORT_FILE"
 Report: $REPORT_FILE"
 		return 1
 	}
+	show_progress "Backing up saves..." 30
 	backup=$(make_backup restore) || {
 		rm -f "$mappings" "$plan" "$rom_index" "$tags"
 		finish_report
@@ -77,7 +80,7 @@ Report: $REPORT_FILE"
 		return 1
 	}
 
-	show_progress "Restoring /Saves folders..." 45
+	show_progress "Restoring /Saves folders..." 50
 	stage="$OPERATION_STATE/restore-stage"
 	rm -rf "$stage"
 	mkdir -p "$stage" || {
@@ -157,6 +160,7 @@ Report: $REPORT_FILE"
 Report: $REPORT_FILE"
 		return 1
 	}
+	show_progress "Installing restored saves..." 75
 	set_save_format "$target_format" || {
 		rm -f "$mappings" "$plan" "$rom_index" "$tags"
 		rm -rf "$stage"
@@ -185,6 +189,7 @@ Report: $REPORT_FILE"
 			return 1
 		}
 	done < "$tags"
+	show_progress "Finishing restore..." 90
 	rm -f "$HOOK_FILE" "$ENABLED_FILE"
 	rm -f "$mappings" "$plan" "$rom_index" "$tags"
 	rm -rf "$stage"

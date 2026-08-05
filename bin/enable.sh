@@ -58,17 +58,21 @@ migrate_tag() {
 		}
 
 		mode=copy
-		final=$(unique_path "$dst")
+		if [ -f "$dst" ] && cmp -s "$file" "$dst"; then
+			final="$dst"
+		else
+			final=$(unique_path "$dst")
 
-		if [ "$final" != "$dst" ]; then
-			report_issue "Collision: $file was copied to $final. Review both saves and choose the correct one."
+			if [ "$final" != "$dst" ]; then
+				report_issue "Collision: $file was copied to $final. Review both saves and choose the correct one."
+			fi
+
+			copy_save_file "$file" "$final" "$mode" || {
+				rm -f "$files"
+				report_issue "Could not copy $file to $final."
+				return 1
+			}
 		fi
-
-		copy_save_file "$file" "$final" "$mode" || {
-			rm -f "$files"
-			report_issue "Could not copy $file to $final."
-			return 1
-		}
 
 		printf '%s|%s\n' "${final#"$CORES_PATH"/}" "$tag/$rel" >> "$MANIFEST"
 	done < "$files"

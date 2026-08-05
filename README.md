@@ -19,11 +19,12 @@ MinArch:
 
 You can then point SyncThing at `/mnt/SDCARD/Saves/Cores` without performing any manual mapping. The tag folders (such as `/Saves/GB`) are runtime aliases, not duplicate save trees. When viewing the folders from the on-device file manager, they will be populated, but viewing the SD card from your computer will display empty directories.
 
-If multiple systems sharing a core contain the same save filename, every copy
-is preserved. The first keeps the normal filename and additional saves use
-`Game.core-conflict-N.srm`. Because MinArch will not load those conflict names
-automatically, the completion dialog reports the issue and asks you to review
-the files.
+If multiple systems sharing a core contain the same save filename, files with
+different contents are preserved. The first keeps the normal filename and
+additional saves use `Game.core-conflict-N.srm`. Byte-identical files reuse the
+existing core save instead of creating a conflict. Because MinArch will not load
+conflict names automatically, the completion dialog reports differing files and
+asks you to review them.
 
 ## UI
 

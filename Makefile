@@ -1,30 +1,34 @@
 .PHONY: release dev test clean
 
-ARCHIVE := ../RetroArch Core Saves.pak.zip
+ARCHIVE := dist/RetroArch Core Saves.pak.zip
 PACKAGE := RetroArch Core Saves.pak
 
 release:
+	mkdir -p dist
 	rm -f "$(ARCHIVE)"
-	git archive --worktree-attributes --format=zip --prefix="$(PACKAGE)/" \
+	git archive --worktree-attributes --format=zip \
 		--output="$(ARCHIVE)" HEAD
 
 dev:
+	mkdir -p dist
 	rm -f "$(ARCHIVE)"
-	cd .. && zip -q -r "$(notdir $(ARCHIVE))" "$(PACKAGE)" \
-		-x "$(PACKAGE)/.git" \
-		-x "$(PACKAGE)/.git/*" \
-		-x "$(PACKAGE)/bin/desktop" \
-		-x "$(PACKAGE)/bin/desktop/*" \
-		-x "$(PACKAGE)/bin/tests" \
-		-x "$(PACKAGE)/bin/tests/*" \
-		-x "$(PACKAGE)/__pycache__" \
-		-x "$(PACKAGE)/__pycache__/*" \
-		-x "$(PACKAGE)/bin/SHA256SUMS" \
-		-x "$(PACKAGE)/Makefile" \
-		-x "$(PACKAGE)/Findings.md" \
-		-x "$(PACKAGE)/.gitignore" \
-		-x "$(PACKAGE)/.gitattributes" \
-		-x "$(PACKAGE)/RetroArch Core Saves.pak.zip"
+	zip -q -r "$(notdir $(ARCHIVE))" . \
+		-x "/.git" \
+		-x "/.git/*" \
+		-x "/bin/desktop" \
+		-x "/bin/desktop/*" \
+		-x "/bin/tests" \
+		-x "/bin/tests/*" \
+		-x "/__pycache__" \
+		-x "/__pycache__/*" \
+		-x "/bin/SHA256SUMS" \
+		-x "/dist/*" \
+		-x "/screenshots/*" \
+		-x "/Makefile" \
+		-x "/Findings.md" \
+		-x "/.gitignore" \
+		-x "/.gitattributes" \
+		-x "/RetroArch Core Saves.pak.zip"
 
 test:
 	bin/tests/test-core-saves.sh
