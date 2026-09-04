@@ -341,6 +341,19 @@ test_boot_mount_hook() (
 	assert_contains "$FAKE_MOUNT_LOG" \
 		"-o bind $CORES_PATH/gpSP $SAVES_PATH/GBA"
 
+	mkdir -p "$SDCARD_PATH/.profiles"
+	printf '%s\n' Kid > "$SDCARD_PATH/.profiles/active"
+	printf '%s\n' Ben > "$SDCARD_PATH/.profiles/core-saves-profile"
+	before=$(wc -l < "$FAKE_MOUNT_LOG" | tr -d ' ')
+	if "$PAK_DIR/bin/boot-mount.sh"; then
+		fail "boot mount hook ignored the Profiles owner"
+	fi
+	after=$(wc -l < "$FAKE_MOUNT_LOG" | tr -d ' ')
+	[ "$before" = "$after" ] || fail "incompatible profile created a Core Saves mount"
+	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
+		"Core Saves belongs to profile Ben; active profile is Kid"
+	rm -rf "$SDCARD_PATH/.profiles"
+
 	MOUNTINFO_PATH="$TEST_ROOT/boot-mountinfo"
 	export MOUNTINFO_PATH
 	printf '1 0 8:1 / / rw - ext4 /dev/test rw\n' > "$MOUNTINFO_PATH"
@@ -1038,6 +1051,22 @@ test_unknown_core_names_are_never_invented() (
 	return 0
 )
 
+test_profiles_allows_only_one_core_saves_owner() (
+	load_fixture profiles-owner
+	mkdir -p "$SDCARD_PATH/.profiles"
+	printf '%s\n' Ben > "$SDCARD_PATH/.profiles/active"
+
+	profiles_core_saves_allowed || fail "unclaimed profile was rejected"
+	claim_profiles_core_saves_owner || fail "first profile could not claim Core Saves"
+	assert_contains "$SDCARD_PATH/.profiles/core-saves-profile" "Ben"
+
+	printf '%s\n' Kid > "$SDCARD_PATH/.profiles/active"
+	if profiles_core_saves_allowed; then
+		fail "second profile was allowed to use Core Saves"
+	fi
+	case "$ACTION_RESULT" in *Ben*) ;; *) fail "owner warning did not identify Ben" ;; esac
+)
+
 test_minui_to_core_and_generic_restore
 test_generic_to_core
 test_reenable_deduplicates_identical_saves
@@ -1070,4 +1099,5 @@ test_unrecognized_emulator_is_reported_not_guessed
 test_reapply_row_completes_partial_mappings
 test_mapping_conf_override_maps_an_unknown_core
 test_unknown_core_names_are_never_invented
+test_profiles_allows_only_one_core_saves_owner
 echo "RetroArch Core Saves tests passed"

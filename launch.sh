@@ -33,8 +33,36 @@ REPORT_FILE="$HOME_PATH/conversion-report.txt"
 OPERATION_JOURNAL="$HOME_PATH/operation.journal"
 OPERATION_STATE="$HOME_PATH/operation-state"
 
+PROFILES_ROOT="$SDCARD_PATH/.profiles"
+PROFILES_ACTIVE_FILE="$PROFILES_ROOT/active"
+PROFILES_CORE_OWNER_FILE="$PROFILES_ROOT/core-saves-profile"
+
 ACTION_RESULT=""
 REPORT_ISSUES=0
+
+profiles_core_saves_allowed() {
+	[ -f "$PROFILES_ACTIVE_FILE" ] || return 0
+	active_profile=$(sed -n '1p' "$PROFILES_ACTIVE_FILE")
+	[ -n "$active_profile" ] || return 0
+	[ -f "$PROFILES_CORE_OWNER_FILE" ] || return 0
+	owner_profile=$(sed -n '1p' "$PROFILES_CORE_OWNER_FILE")
+	[ -z "$owner_profile" ] || [ "$owner_profile" = "$active_profile" ] || {
+		ACTION_RESULT="RetroArch Core Saves is assigned to profile $owner_profile. Disable Profiles or switch back to $owner_profile before changing Core Saves."
+		return 1
+	}
+}
+
+claim_profiles_core_saves_owner() {
+	[ -f "$PROFILES_ACTIVE_FILE" ] || return 0
+	active_profile=$(sed -n '1p' "$PROFILES_ACTIVE_FILE")
+	[ -n "$active_profile" ] || return 0
+	mkdir -p "$PROFILES_ROOT" || return 1
+	if [ -f "$PROFILES_CORE_OWNER_FILE" ]; then
+		[ "$(sed -n '1p' "$PROFILES_CORE_OWNER_FILE")" = "$active_profile" ]
+		return $?
+	fi
+	printf '%s\n' "$active_profile" > "$PROFILES_CORE_OWNER_FILE"
+}
 
 mkdir -p "$LOGS_PATH" "$HOME_PATH" "$BACKUP_ROOT"
 [ ! -f "$LOG_FILE" ] || mv "$LOG_FILE" "$LOG_FILE.1"
@@ -259,6 +287,10 @@ conversion_screen() {
 	local rc option target
 
 	rm -f "$menu" "$state"
+	profiles_core_saves_allowed || {
+		present "$ACTION_RESULT"
+		return 1
+	}
 
 	if [ -f "$ENABLED_FILE" ]; then
 		confirm "Converting saves that are synced to other devices might break compatibility on those devices. Continue?" ||
@@ -356,13 +388,17 @@ main() {
 
 	trap cleanup EXIT INT TERM HUP QUIT
 
-	case "$PLATFORM" in tg5040|tg5050) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
+	case "$PLATFORM" in tg5040|tg5050|my285) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
 
 	# Restore executable bits before anything needs the UI or the converter,
 	# including the recovery pass below.
 	for executable in minui-list minui-presenter save-rzip jq; do
 		chmod +x "$DIR/bin/$PLATFORM/$executable" 2>/dev/null || true
 	done
+
+	if ! profiles_core_saves_allowed; then
+		present "$ACTION_RESULT\n\nYou can still use Revert to NextUI Saves for this profile."
+	fi
 
 	mkdir -p "$SAVES_PATH"
 

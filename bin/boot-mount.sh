@@ -18,6 +18,9 @@ ENABLED="$HOME_PATH/enabled"
 SAVES_PATH="$SDCARD_PATH/Saves"
 CORES_PATH="$SAVES_PATH/Cores"
 LOG_FILE="$LOGS_PATH/core-saves-mounts.txt"
+PROFILES_ROOT="$SDCARD_PATH/.profiles"
+PROFILES_ACTIVE_FILE="$PROFILES_ROOT/active"
+PROFILES_CORE_OWNER_FILE="$PROFILES_ROOT/core-saves-profile"
 
 mount_matches() {
 	source_path="$1"
@@ -86,6 +89,22 @@ mkdir -p "$LOGS_PATH"
 	echo "Missing mount table: $TABLE" >> "$LOG_FILE"
 	exit 1
 }
+
+if [ -f "$PROFILES_ACTIVE_FILE" ]; then
+	active_profile=$(sed -n '1p' "$PROFILES_ACTIVE_FILE")
+	if [ -f "$PROFILES_CORE_OWNER_FILE" ]; then
+		owner_profile=$(sed -n '1p' "$PROFILES_CORE_OWNER_FILE")
+		if [ -n "$owner_profile" ] && [ "$owner_profile" != "$active_profile" ]; then
+			echo "Core Saves belongs to profile $owner_profile; active profile is $active_profile" >> "$LOG_FILE"
+			exit 1
+		fi
+	elif [ -n "$active_profile" ]; then
+		printf '%s\n' "$active_profile" > "$PROFILES_CORE_OWNER_FILE" || {
+			echo "Could not record Core Saves owner: $active_profile" >> "$LOG_FILE"
+			exit 1
+		}
+	fi
+fi
 
 failed=0
 while IFS='|' read -r tag core; do

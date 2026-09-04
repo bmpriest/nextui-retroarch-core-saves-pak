@@ -1,12 +1,13 @@
 {
   "name": "RetroArch Core Saves",
-  "version": "v0.5.4",
+  "version": "v0.5.5",
   "type": "TOOL",
   "description": "Convert your save files and use RetroArch core-name folders for easier SyncThing setup.",
   "author": "bmpriest",
   "repo_url": "https://github.com/bmpriest/nextui-retroarch-core-saves-pak",
   "release_filename": "RetroArch.Core.Saves.pak.zip",
   "changelog": {
+    "0.5.5": "Added compatibility for my285. Working on Profile support.",
     "0.5.4": "Added extra settings to handle paks from the pak store or elsewhere better.",
     "0.5.3": "Fixed a bug to compare for identical saves before keeping both as a conflict."
   },
@@ -18,6 +19,7 @@
   ],
   "platforms": [
     "tg5040",
-    "tg5050"
+    "tg5050",
+    "my285"
   ]
 }

@@ -81,6 +81,7 @@ migrate_tag() {
 
 enable_core_saves() {
 	local format tmp backup tag core
+	profiles_core_saves_allowed || return 1
 	format=$(get_save_format)
 
 	case "$format" in 0|1|2|3) ;; *) ACTION_RESULT="Unknown save format: $format"; return 1 ;; esac
@@ -238,6 +239,14 @@ Report: $REPORT_FILE"
 	commit_operation || {
 		finish_report
 		abort_operation "Core saves were prepared, but the operation could not be committed.
+Report: $REPORT_FILE"
+		return 1
+	}
+
+	claim_profiles_core_saves_owner || {
+		report_issue "Core Saves is active, but Profiles.pak could not record this profile as its owner."
+		finish_report
+		ACTION_RESULT="Core Saves is active, but Profiles ownership could not be recorded. Disable Core Saves before switching profiles.
 Report: $REPORT_FILE"
 		return 1
 	}
