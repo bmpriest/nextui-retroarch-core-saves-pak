@@ -49,8 +49,32 @@ retro_core_name_for_emu() {
 	esac
 }
 
-launch_emu_exe() {
+emu_exe_in() {
 	sed -n 's/^[	 ]*EMU_EXE=\([^	 #]*\).*/\1/p' "$1" | tail -n 1
+}
+
+# Netplay.pak covers an emulator pak by bind-mounting a staged copy over its
+# directory. The staged launch.sh is a wrapper that execs the original, which is
+# preserved beside it as launch.sh.old, and the wrapper carries no EMU_EXE of
+# its own. Reading only launch.sh therefore makes every covered emulator look
+# unmappable for exactly as long as those mounts are up -- which collapses the
+# Mappings ratio and, far worse, drops those systems from the mount table so a
+# migration run at that moment leaves their saves behind in /Saves/<tag>.
+# Netplay guards against the same trap in its own coverable() for the same
+# reason.
+#
+# launch.sh.old is the pak's real launcher, so its EMU_EXE is the authoritative
+# one whenever the file is present. The visible launch.sh is only consulted when
+# there is no .old, or when the .old declares nothing.
+launch_emu_exe() {
+	local launch="$1"
+	local original="${1%/*}/launch.sh.old"
+	local exe=""
+
+	[ -f "$original" ] && exe=$(emu_exe_in "$original")
+	[ -n "$exe" ] || exe=$(emu_exe_in "$launch")
+
+	printf '%s\n' "$exe"
 }
 
 core_for_launch() {
@@ -81,8 +105,12 @@ report_unmapped_emulator() {
 
 	if [ -z "$emu" ]; then
 		# No EMU_EXE at all means a standalone emulator pak, which keeps its own
-		# saves and is not expected to map. Informational, not actionable.
-		report_note "UNMAPPED: /Saves/$tag was left in place ($launch declares no EMU_EXE, which is normal for a standalone emulator pak)."
+		# saves and is not expected to map. Informational, not actionable, and
+		# only true of something that has saves: paks under Emus that are really
+		# launchers -- Netplay's game switcher, for one -- own no /Saves folder,
+		# and claiming one "was left in place" names a path that never existed.
+		[ -d "$SAVES_PATH/$tag" ] &&
+			report_note "UNMAPPED: /Saves/$tag was left in place ($launch declares no EMU_EXE, which is normal for a standalone emulator pak)."
 		return
 	fi
 

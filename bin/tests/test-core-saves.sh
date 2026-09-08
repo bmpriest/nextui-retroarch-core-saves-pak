@@ -69,6 +69,21 @@ link_renamed_pak() {
 	ln -s "$PAK_DIR/mapping.conf" "$renamed/mapping.conf"
 }
 
+# Reproduces what Netplay.pak's bind-mount route leaves at a pak's path: a
+# wrapper launch.sh carrying no EMU_EXE, with the original beside it as
+# launch.sh.old. Netplay mounts a staged copy over the pak directory, so this is
+# exactly what any other tool reading that path sees while the mounts are up.
+wrap_emulator_like_netplay() {
+	path="$1"
+	mv "$path/launch.sh" "$path/launch.sh.old"
+	{
+		echo '#!/bin/sh'
+		echo '# Installed by Netplay.pak - original preserved as launch.sh.old'
+		echo 'DIR="$(dirname "$0")"'
+		echo 'exec "$DIR/launch.sh.old" "$@"'
+	} > "$path/launch.sh"
+}
+
 load_fixture() {
 	name="$1"
 	SDCARD_PATH="$TEST_ROOT/$name/sd"
@@ -126,7 +141,7 @@ test_minui_to_core_and_generic_restore() (
 		current_settings > "$TEST_ROOT/menu-test.json"
 		jq -e '
 			.settings[1].selected == 2 and
-			.settings[2].selected == 1 and
+			.settings[2].options == ["/Saves/Cores"] and
 			.settings[3].name == "> Mappings:" and
 			.settings[3].options == ["3/3"] and
 			.settings[4].options == ["0/3 mounted"] and
@@ -406,7 +421,7 @@ test_inactive_menu_state() (
 	current_settings > "$TEST_ROOT/inactive-menu.json"
 	jq -e '
 		.settings[1].selected == 1 and
-		.settings[2].selected == 0 and
+		.settings[2].options == ["/Saves"] and
 		.settings[3].options == ["3/3"] and
 		.settings[4].options == ["0 mounted"] and
 		.settings[4].features.unselectable == true and
@@ -1051,6 +1066,203 @@ test_unknown_core_names_are_never_invented() (
 	return 0
 )
 
+# Under Profiles, /Saves is a bind mount of the active profile's Saves folder.
+# The menu names the canonical path instead, because that is the one Syncthing
+# has to be pointed at and the one that stays put when profiles switch.
+test_profile_rows_show_the_canonical_path() (
+	mkdir -p "$TEST_ROOT/profile-menu/sd/.profiles/Ben/Saves"
+	printf '%s\n' Ben > "$TEST_ROOT/profile-menu/sd/.profiles/active"
+	load_fixture profile-menu
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+
+	[ "$ACTIVE_PROFILE" = Ben ] || fail "active profile was not detected"
+
+	current_settings > "$TEST_ROOT/profile-menu.json"
+	jq -e '
+		(.settings | length) == 8 and
+		.settings[1].name == "> Profile:" and
+		.settings[1].options == ["Ben"] and
+		.settings[3].name == "> Location:" and
+		.settings[3].options == [".profiles/Ben/Saves"] and
+		.settings[7].name == "Convert to RetroArch Core Saves"
+	' "$TEST_ROOT/profile-menu.json" >/dev/null ||
+		fail "profile menu state is incorrect"
+
+	: > "$ENABLED_FILE"
+	current_settings > "$TEST_ROOT/profile-menu-active.json"
+	jq -e '.settings[3].options == [".profiles/Ben/Saves/Cores"]' \
+		"$TEST_ROOT/profile-menu-active.json" >/dev/null ||
+		fail "enabled profile location is incorrect"
+
+	# A profile that does not own Core Saves says so in the row itself.
+	printf '%s\n' Kid > "$PROFILES_CORE_OWNER_FILE"
+	[ "$(profile_label)" = "Ben (owner: Kid)" ] ||
+		fail "profile row did not report the Core Saves owner"
+	cleanup
+)
+
+# Backups live outside /Saves, so the profile bind mount does not separate them.
+test_backups_are_scoped_to_the_active_profile() (
+	mkdir -p "$TEST_ROOT/profile-backups/sd/.profiles/Ben/Saves"
+	printf '%s\n' Ben > "$TEST_ROOT/profile-backups/sd/.profiles/active"
+	load_fixture profile-backups
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'save' > "$SAVES_PATH/GBA/Game.sav"
+
+	[ "$BACKUP_ROOT" = "$SDCARD_PATH/.profiles/Ben/.core-saves-backups" ] ||
+		fail "backups were not scoped to the active profile: $BACKUP_ROOT"
+
+	make_backup profile-scoped >/dev/null || fail "could not create a backup"
+	assert_dir "$BACKUP_ROOT"
+	assert_absent "$SDCARD_PATH/.core-saves-backups"
+)
+
+# Devices that enabled Core Saves before installing Profiles already have an
+# SD-root backup folder. It belongs to whichever profile owns Core Saves.
+test_legacy_backups_move_into_the_active_profile() (
+	mkdir -p "$TEST_ROOT/profile-adopt/sd/.profiles/Ben/Saves"
+	mkdir -p "$TEST_ROOT/profile-adopt/sd/.core-saves-backups/20250101-000000-legacy"
+	printf '%s\n' Ben > "$TEST_ROOT/profile-adopt/sd/.profiles/active"
+	load_fixture profile-adopt
+
+	assert_dir "$BACKUP_ROOT/20250101-000000-legacy"
+	assert_absent "$SDCARD_PATH/.core-saves-backups"
+)
+
+# Netplay's wrapper hides EMU_EXE behind launch.sh.old. Reading only launch.sh
+# made every covered emulator vanish from discovery while Netplay's mounts were
+# up, which both collapsed the Mappings ratio and would have left those systems
+# behind on a migration run at that moment.
+test_netplay_wrapped_emulators_still_map() (
+	load_fixture netplay-wrap
+	printf 'saveFormat=0\n' > "$SETTINGS_PATH"
+	wrap_emulator_like_netplay "$SYSTEM_PATH/paks/Emus/GBA.pak"
+	wrap_emulator_like_netplay "$SYSTEM_PATH/paks/Emus/GB.pak"
+
+	compute_mapping_status
+	[ "$MAPPING_SUMMARY" = "3/3" ] ||
+		fail "wrapped emulators dropped out of discovery: $MAPPING_SUMMARY"
+
+	# launch.sh.old is the pak's real launcher, so its EMU_EXE wins even when
+	# the file shadowing it declares one of its own.
+	printf 'EMU_EXE=snes9x\n' >> "$SYSTEM_PATH/paks/Emus/GBA.pak/launch.sh"
+	[ "$(launch_emu_exe "$SYSTEM_PATH/paks/Emus/GBA.pak/launch.sh")" = gpsp ] ||
+		fail "wrapper EMU_EXE was preferred over launch.sh.old"
+	sed -i '/EMU_EXE=snes9x/d' "$SYSTEM_PATH/paks/Emus/GBA.pak/launch.sh"
+
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'gba' > "$SAVES_PATH/GBA/Wrapped.gba.sav"
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	assert_file "$CORES_PATH/gpSP/Wrapped.srm"
+	assert_contains "$MOUNT_TABLE" "GBA|gpSP"
+	assert_contains "$MOUNT_TABLE" "GB|Gambatte"
+	cleanup
+)
+
+# Netplay also installs a game-switcher launcher at Emus/<platform>/NETPLAY.pak.
+# It is not an emulator, owns no /Saves folder, and used to draw a report line
+# announcing that a path which never existed had been left in place.
+test_launcher_paks_without_saves_are_not_reported() (
+	load_fixture netplay-launcher
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SDCARD_PATH/Emus/$PLATFORM/NETPLAY.pak"
+	printf '#!/bin/sh\nexec "$NP/launch.sh" --quick\n' \
+		> "$SDCARD_PATH/Emus/$PLATFORM/NETPLAY.pak/launch.sh"
+	mkdir -p "$SAVES_PATH/GBA"
+	printf 'gba' > "$SAVES_PATH/GBA/Game.srm"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	compute_mapping_status
+	[ "$MAPPING_SUMMARY" = "3/3" ] ||
+		fail "launcher pak changed the mapping ratio: $MAPPING_SUMMARY"
+	if grep -q NETPLAY "$REPORT_FILE"; then
+		fail "launcher pak was reported as an unmapped emulator"
+	fi
+	assert_absent "$CORES_PATH/NETPLAY"
+
+	# A standalone emulator that does own saves is still reported, because
+	# there really is a folder being left behind.
+	mkdir -p "$SDCARD_PATH/Emus/$PLATFORM/PSP.pak" "$SAVES_PATH/PSP"
+	printf '#!/bin/sh\necho standalone\n' \
+		> "$SDCARD_PATH/Emus/$PLATFORM/PSP.pak/launch.sh"
+	printf 'psp' > "$SAVES_PATH/PSP/Game.srm"
+	start_report "note check"
+	discover_mappings "$TEST_ROOT/netplay-launcher-table.conf" >/dev/null ||
+		fail "rediscovery produced no mappings"
+	assert_contains "$REPORT_FILE" "UNMAPPED: /Saves/PSP"
+	if grep -q NETPLAY "$REPORT_FILE"; then
+		fail "launcher pak was reported on rediscovery"
+	fi
+	cleanup
+)
+
+# Netplay installs its own mGBA pak alongside the stock GBA pak. They are
+# different cores, so they get different core folders and different save files
+# for the same ROM -- which is the point, not a collision to be merged.
+test_netplay_mgba_maps_to_its_own_core_folder() (
+	load_fixture netplay-mgba
+	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
+	mkdir -p "$SDCARD_PATH/Emus/$PLATFORM/MGBA.pak"
+	printf 'EMU_EXE=mgba\n' > "$SDCARD_PATH/Emus/$PLATFORM/MGBA.pak/launch.sh"
+	mkdir -p "$SAVES_PATH/GBA" "$SAVES_PATH/MGBA"
+	printf 'gpsp-save' > "$SAVES_PATH/GBA/Advance.srm"
+	printf 'mgba-save' > "$SAVES_PATH/MGBA/Advance.srm"
+
+	compute_mapping_status
+	[ "$MAPPING_SUMMARY" = "4/4" ] ||
+		fail "MGBA.pak was not counted as mappable: $MAPPING_SUMMARY"
+
+	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
+
+	assert_contains "$MOUNT_TABLE" "MGBA|mGBA"
+	assert_contains "$MOUNT_TABLE" "GBA|gpSP"
+	[ "$(cat "$CORES_PATH/mGBA/Advance.srm")" = "mgba-save" ] ||
+		fail "mGBA save did not land in its own core folder"
+	[ "$(cat "$CORES_PATH/gpSP/Advance.srm")" = "gpsp-save" ] ||
+		fail "gpSP save was disturbed by the mGBA pak"
+	assert_absent "$CORES_PATH/mGBA/Advance.core-conflict-1.srm"
+	cleanup
+)
+
+# Every supported platform needs the library directories its own launcher
+# exports; pointing all of them at Trimui's meant the rest were resolving by
+# luck of the default search path. h700 in particular loads libGLESv2 and
+# libsamplerate from the device's aarch64 multiarch directories.
+test_library_path_is_per_platform() (
+	load_fixture library-path
+
+	PLATFORM=tg5040
+	[ "$(platform_library_path)" = "/usr/trimui/lib" ] ||
+		fail "tg5040 library path is wrong"
+	PLATFORM=h700
+	[ "$(platform_library_path)" = "/usr/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu" ] ||
+		fail "h700 library path is wrong"
+	PLATFORM=my285
+	[ "$(platform_library_path)" = "/config/lib:/customer/lib:/lib" ] ||
+		fail "my285 library path is wrong"
+
+	# An empty element in a loader path means the current directory, so a
+	# platform with no vendor directories must not leave one behind.
+	PLATFORM=desktop
+	SYSTEM_PATH=/sd/.system/desktop
+	unset LD_LIBRARY_PATH
+	[ "$(compose_library_path)" = "/sd/.system/desktop/lib" ] ||
+		fail "empty vendor list left a stray path element"
+
+	PLATFORM=h700
+	SYSTEM_PATH=/sd/.system/h700
+	LD_LIBRARY_PATH=/opt/inherited
+	case "$(compose_library_path)" in
+		/sd/.system/h700/lib:*:/opt/inherited) ;;
+		*) fail "inherited library path was not appended: $(compose_library_path)" ;;
+	esac
+	case "$(compose_library_path)" in
+		*::*|*:) fail "composed library path has an empty element" ;;
+	esac
+)
+
 test_profiles_allows_only_one_core_saves_owner() (
 	load_fixture profiles-owner
 	mkdir -p "$SDCARD_PATH/.profiles"
@@ -1100,4 +1312,11 @@ test_reapply_row_completes_partial_mappings
 test_mapping_conf_override_maps_an_unknown_core
 test_unknown_core_names_are_never_invented
 test_profiles_allows_only_one_core_saves_owner
+test_profile_rows_show_the_canonical_path
+test_backups_are_scoped_to_the_active_profile
+test_legacy_backups_move_into_the_active_profile
+test_netplay_wrapped_emulators_still_map
+test_launcher_paks_without_saves_are_not_reported
+test_netplay_mgba_maps_to_its_own_core_folder
+test_library_path_is_per_platform
 echo "RetroArch Core Saves tests passed"

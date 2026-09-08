@@ -36,9 +36,81 @@ OPERATION_STATE="$HOME_PATH/operation-state"
 PROFILES_ROOT="$SDCARD_PATH/.profiles"
 PROFILES_ACTIVE_FILE="$PROFILES_ROOT/active"
 PROFILES_CORE_OWNER_FILE="$PROFILES_ROOT/core-saves-profile"
+LEGACY_BACKUP_ROOT="$BACKUP_ROOT"
 
 ACTION_RESULT=""
 REPORT_ISSUES=0
+
+# Profiles bind-mounts .profiles/<name>/Saves onto /Saves, so /Saves and the
+# canonical profile path are the same directory. Everything this pak mounts or
+# writes keeps using /Saves -- NextUI and MinArch have that path hardcoded, and
+# re-rooting would only add a dependency on Profiles' internals. The canonical
+# path is used for display and for anything stored OUTSIDE /Saves, which is not
+# covered by the profile mount and would otherwise be shared between profiles.
+active_profile_name() {
+	local name
+
+	[ -f "$PROFILES_ACTIVE_FILE" ] || return 1
+	name=$(sed -n '1p' "$PROFILES_ACTIVE_FILE")
+	[ -n "$name" ] || return 1
+	[ -d "$PROFILES_ROOT/$name/Saves" ] || return 1
+
+	printf '%s\n' "$name"
+}
+
+ACTIVE_PROFILE=$(active_profile_name) || ACTIVE_PROFILE=""
+
+if [ -n "$ACTIVE_PROFILE" ]; then
+	PROFILE_SAVES_PATH="$PROFILES_ROOT/$ACTIVE_PROFILE/Saves"
+	BACKUP_ROOT="$PROFILES_ROOT/$ACTIVE_PROFILE/.core-saves-backups"
+else
+	PROFILE_SAVES_PATH="$SAVES_PATH"
+fi
+
+# Backups live outside /Saves, so before this they landed in one SD-root folder
+# shared by every profile -- where prune_backups kept only the 5 newest overall
+# and one profile's conversions could evict another's. Core Saves has a single
+# owner profile, so moving the existing folder under that profile is safe.
+adopt_legacy_backups() {
+	[ -n "$ACTIVE_PROFILE" ] || return 0
+	[ -d "$LEGACY_BACKUP_ROOT" ] || return 0
+	[ -e "$BACKUP_ROOT" ] && return 0
+
+	mkdir -p "$(dirname "$BACKUP_ROOT")" || return 1
+	mv "$LEGACY_BACKUP_ROOT" "$BACKUP_ROOT"
+}
+
+# The canonical path for the current state, shown in the Location row and used
+# in the Syncthing guidance. Under Profiles, /Saves is a moving alias that
+# Profiles itself refuses to let Syncthing watch.
+display_location() {
+	local suffix=""
+
+	[ -f "$ENABLED_FILE" ] && suffix="/Cores"
+
+	if [ -n "$ACTIVE_PROFILE" ]; then
+		printf '.profiles/%s/Saves%s\n' "$ACTIVE_PROFILE" "$suffix"
+	else
+		printf '/Saves%s\n' "$suffix"
+	fi
+}
+
+# Surfaces an ownership mismatch in the menu itself; until now it only appeared
+# as a dialog on launch, so a user who dismissed it saw no reason the actions
+# were refusing to run.
+profile_label() {
+	local owner=""
+
+	[ -n "$ACTIVE_PROFILE" ] || return 0
+	[ -f "$PROFILES_CORE_OWNER_FILE" ] &&
+		owner=$(sed -n '1p' "$PROFILES_CORE_OWNER_FILE")
+
+	if [ -n "$owner" ] && [ "$owner" != "$ACTIVE_PROFILE" ]; then
+		printf '%s (owner: %s)\n' "$ACTIVE_PROFILE" "$owner"
+	else
+		printf '%s\n' "$ACTIVE_PROFILE"
+	fi
+}
 
 profiles_core_saves_allowed() {
 	[ -f "$PROFILES_ACTIVE_FILE" ] || return 0
@@ -64,13 +136,42 @@ claim_profiles_core_saves_owner() {
 	printf '%s\n' "$active_profile" > "$PROFILES_CORE_OWNER_FILE"
 }
 
+adopt_legacy_backups || :
 mkdir -p "$LOGS_PATH" "$HOME_PATH" "$BACKUP_ROOT"
 [ ! -f "$LOG_FILE" ] || mv "$LOG_FILE" "$LOG_FILE.1"
 : > "$LOG_FILE"
 
+# minui-list and minui-presenter are dynamically linked, so they need the same
+# library directories the platform's own launcher exports. These are taken from
+# each platform's MinUI/NextUI.pak launch.sh; only the vendor directories differ,
+# and pointing every platform at Trimui's meant the others were resolving purely
+# by luck of the default search path.
+platform_library_path() {
+	case "$PLATFORM" in
+		tg5040|tg5050) echo "/usr/trimui/lib" ;;
+		h700) echo "/usr/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu" ;;
+		my285) echo "/config/lib:/customer/lib:/lib" ;;
+	esac
+}
+
+# Joined by hand rather than by interpolation: an empty vendor list or an unset
+# inherited LD_LIBRARY_PATH would otherwise leave an empty element, and an empty
+# element in a loader path means the current directory.
+compose_library_path() {
+	local path="$SYSTEM_PATH/lib"
+	local extra
+
+	extra=$(platform_library_path)
+	[ -z "$extra" ] || path="$path:$extra"
+	[ -z "${LD_LIBRARY_PATH:-}" ] || path="$path:$LD_LIBRARY_PATH"
+
+	printf '%s\n' "$path"
+}
+
 export HOME="$HOME_PATH"
 export PATH="$DIR/bin/$PLATFORM:$DIR/bin:$PATH"
-export LD_LIBRARY_PATH="$SYSTEM_PATH/lib:/usr/trimui/lib:${LD_LIBRARY_PATH:-}"
+LD_LIBRARY_PATH=$(compose_library_path)
+export LD_LIBRARY_PATH
 
 for library in report settings mappings mount-manager backup save-format audit enable restore; do
 	. "$DIR/bin/$library.sh" || exit 1
@@ -186,19 +287,17 @@ current_settings() {
 	local minui_list_file="/tmp/${PAK_NAME}-settings.json"
 	local mount_rows="/tmp/${PAK_NAME}-mount-rows.tsv"
 	local mount_rows_json="/tmp/${PAK_NAME}-mount-rows.json"
-	local format location mounts active mounts_selectable
+	local format location mounts active mounts_selectable profile
 
 	rm -f "$minui_list_file" "$mount_rows" "$mount_rows_json"
 
 	format=$(save_format_option "$(get_save_format)")
-	location=0
+	profile=$(profile_label)
+	location=$(display_location)
 	active=false
 	mounts_selectable=false
 
-	if [ -f "$ENABLED_FILE" ]; then
-		location=1
-		active=true
-	fi
+	[ -f "$ENABLED_FILE" ] && active=true
 
 	mounts=$(mount_status)
 
@@ -211,32 +310,41 @@ current_settings() {
 		| map(select(length > 0) | split("\t"))
 	' "$mount_rows" > "$mount_rows_json" || return 1
 
+	# Rows are matched by name rather than by index: the Profile row is dropped
+	# when Profiles is not installed and the action rows are dropped depending
+	# on state, so every index-based edit here would have to be renumbered
+	# against the others. map with `empty` deletes a row in place.
 	jq -rM \
 		--argjson format "$format" \
-		--argjson location "$location" \
+		--arg location "$location" \
+		--arg profile "$profile" \
 		--arg mounts "$mounts" \
 		--argjson active "$active" \
 		--argjson mounts_selectable "$mounts_selectable" \
 		--arg mapping_summary "$MAPPING_SUMMARY" \
 		--argjson stale "$MAPPING_STALE" \
 		--slurpfile mount_rows "$mount_rows_json" \
-		'.settings[1].selected = $format
-		| .settings[2].selected = $location
-		| .settings[3].options = [$mapping_summary]
-		| .settings[4].options = [$mounts]
-		| .settings[4].features.unselectable = ($mounts_selectable | not)
-		| if $mounts_selectable
-			then .settings[4].features.show_confirm = true
-			else .settings[4].features |= del(.show_confirm) end
-		| if $active then
-			(if $stale
-				then .settings[6].name = "Re-apply Core Save Mappings"
-				else del(.settings[6]) end)
-			else del(.settings[7]) end
-		| .settings[6].features.unselectable = false
-		| if (.settings | length) > 7
-			then .settings[7].features.unselectable = false
-			else . end
+		'.settings |= map(
+			if .name == "> Profile:" then
+				(if $profile == "" then empty else .options = [$profile] end)
+			elif .name == "> Format:" then .selected = $format
+			elif .name == "> Location:" then .options = [$location]
+			elif .name == "> Mappings:" then .options = [$mapping_summary]
+			elif .name == "> Mounts:" then
+				.options = [$mounts]
+				| .features.unselectable = ($mounts_selectable | not)
+				| if $mounts_selectable
+					then .features.show_confirm = true
+					else .features |= del(.show_confirm) end
+			elif .name == "Convert to RetroArch Core Saves" then
+				(if $active | not then .features.unselectable = false
+				elif $stale then
+					.name = "Re-apply Core Save Mappings"
+					| .features.unselectable = false
+				else empty end)
+			elif .name == "Revert to NextUI Saves" then
+				(if $active then .features.unselectable = false else empty end)
+			else . end)
 		| .conversions[1].name = .conversions[$format + 2].name
 		| .mounts[1] as $mount_template
 		| .mounts = [.mounts[0]] + ($mount_rows[0]
@@ -256,15 +364,24 @@ main_screen() {
 	local minui_list_file="/tmp/${PAK_NAME}-minui-list.json"
 	local minui_list_write_location="/tmp/${PAK_NAME}-minui-list-write-location.out"
 	local failed_menu_file="$HOME_PATH/minui-list-error.json"
-	local exit_code
+	local exit_code selected
 
 	rm -f "$minui_list_file" "$minui_list_write_location"
 	echo "$settings" > "$minui_list_file"
 
+	# The cursor lands on the action the current state is most likely to want,
+	# preferring Re-apply when it is present. Rows are now added and removed
+	# conditionally, so this cannot be a fixed index.
+	selected=$(jq '[.settings[].name]
+		| (index("Re-apply Core Save Mappings")
+			// index("Convert to RetroArch Core Saves")
+			// index("Revert to NextUI Saves")
+			// 0)' "$minui_list_file") || selected=0
+
 	minui-list --disable-auto-sleep --file "$minui_list_file" --format json \
 		--title "$HUMAN_READABLE_NAME" --title-alignment center --confirm-text "SELECT" \
 		--action-button "X" --action-text "CONVERT SAVES" \
-		--cancel-text "EXIT" --item-key settings --selected 6 \
+		--cancel-text "EXIT" --item-key settings --selected "$selected" \
 		--write-location "$minui_list_write_location" >> "$LOG_FILE" 2>&1
 	exit_code=$?
 
@@ -388,7 +505,7 @@ main() {
 
 	trap cleanup EXIT INT TERM HUP QUIT
 
-	case "$PLATFORM" in tg5040|tg5050|my285) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
+	case "$PLATFORM" in tg5040|tg5050|h700|my285) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
 
 	# Restore executable bits before anything needs the UI or the converter,
 	# including the recovery pass below.

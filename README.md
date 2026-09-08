@@ -17,7 +17,7 @@ MinArch:
 /mnt/SDCARD/Saves/GBA -> /mnt/SDCARD/Saves/Cores/gpSP
 ```
 
-You can then point SyncThing at `/mnt/SDCARD/Saves/Cores` without performing any manual mapping. The tag folders (such as `/Saves/GB`) are runtime aliases, not duplicate save trees. When viewing the folders from the on-device file manager, they will be populated, but viewing the SD card from your computer will display empty directories.
+You can then point SyncThing at `/mnt/SDCARD/Saves/Cores` without performing any manual mapping. **If Profiles.pak is installed, use the canonical path instead** — see [Profiles](#profiles). The tag folders (such as `/Saves/GB`) are runtime aliases, not duplicate save trees. When viewing the folders from the on-device file manager, they will be populated, but viewing the SD card from your computer will display empty directories.
 
 If multiple systems sharing a core contain the same save filename, files with
 different contents are preserved. The first keeps the normal filename and
@@ -30,8 +30,9 @@ asks you to review them.
 
 The pak displays:
 
+- The active profile, when Profiles.pak is installed.
 - Current NextUI save format.
-- Whether saves currently point to `/Saves` or `/Saves/Cores`.
+- Where saves currently live, as a path.
 - How many installed emulators are mapped to a core, as `resolved/mappable`.
 - How many configured tag folders are mounted, if any.
 
@@ -81,6 +82,74 @@ Available actions depend on current state.
 5. Installs script to mount folders at boot
 6. Mounts folders
 
+
+## Netplay
+
+Netplay.pak covers an emulator pak by bind-mounting a staged copy over its
+directory. The staged `launch.sh` is a wrapper that execs the original, kept
+beside it as `launch.sh.old`, and the wrapper carries no `EMU_EXE` line.
+
+`launch.sh.old` is the pak's real launcher, so Core Saves takes its `EMU_EXE`
+as authoritative whenever the file is present and only falls back to the visible
+`launch.sh`. A covered emulator therefore maps exactly as it does normally. Without that, every emulator Netplay covers dropped
+out of discovery for as long as its mounts were up: the Mappings ratio collapsed
+to whatever handful of systems Netplay does not cover, **Re-apply Core Save
+Mappings** appeared and disappeared as those mounts came and went, and a
+migration run at that moment would have left the covered systems' saves behind
+in `/Saves/<tag>`.
+
+`MGBA.pak`, which Netplay installs under `Emus/<platform>`, is a real libretro
+emulator pak with its own bundled core, so it counts in Mappings and maps to
+`/Saves/Cores/mGBA` — its own folder, separate from the stock GBA pak's
+`/Saves/Cores/gpSP`. mGBA and gpSP are different cores with different save
+formats, so the same ROM keeps a separate save under each. That separation is
+deliberate; the two are never merged.
+
+`NETPLAY.pak` is the game-switcher launcher rather than an emulator; it owns no
+`/Saves` folder and is no longer named in the conversion report.
+
+## Profiles
+
+Profiles.pak bind-mounts `.profiles/<name>/Saves` onto `/Saves` at boot, so
+`/Saves` and `/Saves/Cores` are the active profile's folders under a second
+name — the same directories, not copies. Core Saves keeps mounting and writing
+through `/Saves`, because NextUI and MinArch have that path hardcoded and the
+tag aliases have to land where the emulators look for them.
+
+What changes is what the pak reports and where it puts things that sit outside
+`/Saves`:
+
+- A **Profile** row shows the active profile. If Profiles has assigned Core
+  Saves to a different profile, it shows that owner too, and the actions are
+  refused until you switch back.
+- **Location** shows the canonical path — `.profiles/<name>/Saves/Cores` rather
+  than `/Saves/Cores`.
+- Backups go to `.profiles/<name>/.core-saves-backups`. They used to share one
+  SD-root folder across every profile, where the five-backup retention limit
+  meant one profile's conversions could evict another's. An existing SD-root
+  folder is moved into the active profile the next time the pak is opened.
+
+Core Saves may only be enabled for one profile, which Profiles records in
+`.profiles/core-saves-profile`. Its tag mounts are torn down before Profiles
+switches the `/Saves` parent and re-established only for the owning profile.
+
+### Syncthing with Profiles
+
+Point Syncthing at:
+
+```text
+/mnt/SDCARD/.profiles/<name>/Saves/Cores
+```
+
+Not `/mnt/SDCARD/Saves/Cores`. Under Profiles that is a moving alias — it
+points at whichever profile is active — and Profiles blocks initial setup if
+Syncthing's `config.xml` contains `/Saves` or anything under it.
+
+Scope the folder to `Cores`, not to the profile's whole `Saves` directory. The
+tag bind mounts exist at `/Saves/<tag>`, so the matching
+`.profiles/<name>/Saves/<tag>` folders sit empty on disk — but a peer device
+that is not running Core Saves has real files in its `<tag>` folders, and those
+would sync down underneath the mount where nothing can read them.
 
 ## Boot Mounts
 
@@ -237,7 +306,15 @@ its own folder name and the installed boot hook is generated to match.
 `<PLATFORM>` should match your device:
 
 - `tg5040` for TrimUI Brick or TrimUI Smart Pro.
-- `tg5050` for TrimUI Smart Pro S
+- `tg5050` for TrimUI Smart Pro S.
+- `h700` for the Anbernic RG XX family.
+- `my285` for the Miyoo Mini Flip.
+
+Each supported platform has its own binaries under `bin/<PLATFORM>`, and the pak
+refuses to run on anything else rather than guessing. Library search paths are
+also per-platform, matching what that platform's own launcher exports: h700
+resolves `libGLESv2` and `libsamplerate` from the device's aarch64 multiarch
+directories, which the other platforms do not have.
 
 ## Dependencies
 

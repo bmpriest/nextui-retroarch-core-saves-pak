@@ -8,6 +8,14 @@
 			}
 		},
 		{
+			"name": "> Profile:",
+			"options": ["$profile"],
+			"selected": 0,
+			"features": {
+				"unselectable": true
+			}
+		},
+		{
 			"name": "> Format:",
 			"options": [".sav", ".<pak>.sav", ".srm", ".srm (Compressed)"],
 			"selected": 0,
@@ -17,7 +25,7 @@
 		},
 		{
 			"name": "> Location:",
-			"options": ["/Saves", "/Saves/Cores"],
+			"options": ["$location"],
 			"selected": 0,
 			"features": {
 				"unselectable": true
