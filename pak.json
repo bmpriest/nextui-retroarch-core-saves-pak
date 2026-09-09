@@ -1,6 +1,6 @@
 {
   "name": "RetroArch Core Saves",
-  "version": "v0.5.5",
+  "version": "v0.6.0",
   "type": "TOOL",
   "description": "Convert your save files and use RetroArch core-name folders for easier SyncThing setup.",
   "author": "bmpriest",
