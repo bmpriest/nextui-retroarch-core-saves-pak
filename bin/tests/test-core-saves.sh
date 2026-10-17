@@ -1253,6 +1253,9 @@ test_library_path_is_per_platform() (
 	PLATFORM=my285
 	[ "$(platform_library_path)" = "/config/lib:/customer/lib:/lib" ] ||
 		fail "my285 library path is wrong"
+	PLATFORM=my355
+	[ "$(platform_library_path)" = "/usr/miyoo/lib" ] ||
+		fail "my355 library path is wrong"
 
 	# An empty element in a loader path means the current directory, so a
 	# platform with no vendor directories must not leave one behind.
@@ -1272,6 +1275,59 @@ test_library_path_is_per_platform() (
 	case "$(compose_library_path)" in
 		*::*|*:) fail "composed library path has an empty element" ;;
 	esac
+)
+
+# The my355 UI binaries rewrite minuisettings.txt with RGB colors, which NextUI
+# then reads as blue. The guard must put the original file back and still
+# report the binary's exit code.
+test_my355_ui_cannot_corrupt_theme_colors() (
+	load_fixture theme-guard
+	PLATFORM=my355
+	mkdir -p "$SHARED_USERDATA_PATH" "$SDCARD_PATH/fake-bin"
+	printf 'color7=0x000000FF\ncolor1=0xFFFFFFFF\ncolor2=0x9B2257\nsaveFormat=3\n' > "$SETTINGS_PATH"
+
+	# The fake UI records the file it was given, then rewrites it the way the
+	# real binary does.
+	printf '#!/bin/sh\ncp "%s" "%s/seen"\nprintf "color7=0x0000FF\\n" > "%s"\nexit 4\n' \
+		"$SETTINGS_PATH" "$SDCARD_PATH" "$SETTINGS_PATH" \
+		> "$SDCARD_PATH/fake-bin/minui-list"
+	chmod +x "$SDCARD_PATH/fake-bin/minui-list"
+	PATH="$SDCARD_PATH/fake-bin:$PATH"
+
+	rc=0
+	run_ui minui-list --file /dev/null || rc=$?
+	[ "$rc" = 4 ] || fail "guard changed the UI exit code"
+	assert_contains "$SDCARD_PATH/seen" "color7=0x000000"
+	assert_contains "$SDCARD_PATH/seen" "color1=0xFFFFFF"
+	assert_contains "$SDCARD_PATH/seen" "color2=0x9B2257"
+	assert_contains "$SDCARD_PATH/seen" "saveFormat=3"
+	if grep -Fq -e "0x000000FF" -e "0xFFFFFFFF" "$SDCARD_PATH/seen"; then
+		fail "UI was given RGBA colors it reads as blue"
+	fi
+	assert_contains "$SETTINGS_PATH" "color7=0x000000FF"
+	assert_contains "$SETTINGS_PATH" "color1=0xFFFFFFFF"
+	assert_contains "$SETTINGS_PATH" "saveFormat=3"
+	[ ! -e "/tmp/${PAK_NAME}-minuisettings.bak" ] || fail "guard left its snapshot behind"
+
+	PLATFORM=h700
+	printf 'color7=0x000000FF\n' > "$SETTINGS_PATH"
+	rc=0
+	run_ui minui-list --file /dev/null || rc=$?
+	[ "$rc" = 4 ] || fail "run_ui changed the UI exit code off my355"
+	assert_contains "$SETTINGS_PATH" "color7=0x0000FF"
+
+	# minui-list must be given the OS background instead of its built-in black.
+	printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$SDCARD_PATH" \
+		> "$SDCARD_PATH/fake-bin/minui-list"
+	PLATFORM=my355
+	printf 'color7=0xF4EFFDFF\n' > "$SETTINGS_PATH"
+	run_ui minui-list --file /dev/null || fail "fake minui-list failed"
+	assert_contains "$SDCARD_PATH/args" "--background-color"
+	assert_contains "$SDCARD_PATH/args" "#F4EFFD"
+	printf 'color7=0x12141F\n' > "$SETTINGS_PATH"
+	assert_value theme_background_color "#12141F"
+	rm -f "$SETTINGS_PATH"
+	assert_value theme_background_color "#000000"
 )
 
 test_profiles_allows_only_one_core_saves_owner() (
@@ -1332,4 +1388,5 @@ test_netplay_wrapped_emulators_still_map
 test_launcher_paks_without_saves_are_not_reported
 test_netplay_mgba_maps_to_its_own_core_folder
 test_library_path_is_per_platform
+test_my355_ui_cannot_corrupt_theme_colors
 echo "RetroArch Core Saves tests passed"

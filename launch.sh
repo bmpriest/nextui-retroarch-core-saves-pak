@@ -149,6 +149,7 @@ platform_library_path() {
 		tg5040|tg5050) echo "/usr/trimui/lib" ;;
 		h700) echo "/usr/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu" ;;
 		my285) echo "/config/lib:/customer/lib:/lib" ;;
+		my355) echo "/usr/miyoo/lib" ;;
 	esac
 }
 
@@ -191,7 +192,7 @@ present() {
 	local message="$1"
 
 	if command -v minui-presenter >/dev/null 2>&1; then
-		minui-presenter --message "$message" --confirm-show --confirm-text "OK"
+		run_ui minui-presenter --message "$message" --confirm-show --confirm-text "OK"
 	else
 		show_progress "$message" 100
 	fi
@@ -201,7 +202,7 @@ confirm() {
 	local message="$1"
 
 	if command -v minui-presenter >/dev/null 2>&1; then
-		minui-presenter --message "$message" \
+		run_ui minui-presenter --message "$message" \
 			--confirm-show --confirm-text "CONTINUE" \
 			--cancel-show --cancel-text "CANCEL"
 		return $?
@@ -306,7 +307,7 @@ current_settings() {
 	jq -Rsc '
 		split("\n")
 		| map(select(length > 0) | split("\t"))
-	' "$mount_rows" > "$mount_rows_json" || return 1
+	' "$mount_rows" > "$mount_rows_json" 2>> "$LOG_FILE" || return 1
 
 	# Rows are matched by name rather than by index: the Profile row is dropped
 	# when Profiles is not installed and the action rows are dropped depending
@@ -347,7 +348,7 @@ current_settings() {
 		| .mounts[1] as $mount_template
 		| .mounts = [.mounts[0]] + ($mount_rows[0]
 			| map($mount_template * {name: .[0], options: [.[1]]}))' \
-		"$DIR/settings.json" > "$minui_list_file" || {
+		"$DIR/settings.json" > "$minui_list_file" 2>> "$LOG_FILE" || {
 		rm -f "$mount_rows" "$mount_rows_json" "$minui_list_file"
 		log "Could not render the settings menu."
 		return 1
@@ -376,7 +377,7 @@ main_screen() {
 			// index("Revert to NextUI Saves")
 			// 0)' "$minui_list_file") || selected=0
 
-	minui-list --disable-auto-sleep --file "$minui_list_file" --format json \
+	run_ui minui-list --disable-auto-sleep --file "$minui_list_file" --format json \
 		--title "$HUMAN_READABLE_NAME" --title-alignment center --confirm-text "SELECT" \
 		--action-button "X" --action-text "CONVERT SAVES" \
 		--cancel-text "EXIT" --item-key settings --selected "$selected" \
@@ -414,7 +415,7 @@ conversion_screen() {
 
 	echo "$settings" > "$menu"
 
-	minui-list --disable-auto-sleep --file "$menu" --format json \
+	run_ui minui-list --disable-auto-sleep --file "$menu" --format json \
 		--title "Convert Saves" --title-alignment center \
 		--confirm-text "CONVERT" --cancel-text "CANCEL" \
 		--item-key conversions --selected 2 --write-value state \
@@ -446,7 +447,7 @@ mounts_screen() {
 	rm -f "$menu"
 	echo "$settings" > "$menu"
 
-	minui-list --disable-auto-sleep --file "$menu" --format json \
+	run_ui minui-list --disable-auto-sleep --file "$menu" --format json \
 		--title "Active Mounts" --title-alignment center \
 		--confirm-text "BACK" --cancel-text "BACK" \
 		--item-key mounts --selected 1 >> "$LOG_FILE" 2>&1
@@ -458,7 +459,60 @@ mounts_screen() {
 	esac
 }
 
+# The OS background color (color7) as #RRGGBB. Values are stored as RRGGBBAA or
+# plain RRGGBB, so the first six digits are the color either way.
+theme_background_color() {
+	local hex=""
+
+	[ ! -f "$SETTINGS_PATH" ] ||
+		hex=$(sed -n 's/^color7=0[xX]\([0-9A-Fa-f]\{6\}\).*/\1/p' "$SETTINGS_PATH" | tail -n 1)
+
+	printf '#%s\n' "${hex:-000000}"
+}
+
+# The my355 minui-list and minui-presenter builds predate the RRGGBBAA color
+# format. They read "0x000000FF" as the RGB value 0x0000FF -- the alpha byte
+# becomes blue -- and write it back as "0x0000FF", which NextUI then reads as
+# opaque blue (0x0000FFFF). They also drop every setting they do not know about.
+# So each call runs against a copy of the settings with the alpha byte stripped
+# from the colors, which makes the pak render with the OS palette, and the
+# original file is put back afterwards. Nothing else in this pak edits the file
+# while a UI binary is running. Every UI call goes through here; the guard is a
+# no-op on other platforms.
+run_ui() {
+	local snapshot="/tmp/${PAK_NAME}-minuisettings.bak"
+	local rc
+
+	# minui-list 0.15.4 fills every row with an explicit #000000 unless told
+	# otherwise, which hides the theme background. Hand it the OS one.
+	if [ "$PLATFORM" = my355 ] && [ "$1" = minui-list ]; then
+		shift
+		set -- minui-list --background-color "$(theme_background_color)" "$@"
+	fi
+
+	if [ "$PLATFORM" != my355 ] || [ ! -f "$SETTINGS_PATH" ] ||
+		! cp "$SETTINGS_PATH" "$snapshot"; then
+		"$@"
+		return $?
+	fi
+
+	sed 's/^\(color[0-9]*=0[xX][0-9A-Fa-f]\{6\}\)[0-9A-Fa-f]\{2\}\([[:space:]]*\)$/\1\2/' \
+		"$snapshot" > "$SETTINGS_PATH" ||
+		cp "$snapshot" "$SETTINGS_PATH"
+
+	"$@"
+	rc=$?
+	cp "$snapshot" "$SETTINGS_PATH" || log "Could not restore $SETTINGS_PATH."
+	rm -f "$snapshot"
+	return $rc
+}
+
 cleanup() {
+	# An interrupted UI call would otherwise leave the converted colors behind.
+	if [ -f "/tmp/${PAK_NAME}-minuisettings.bak" ]; then
+		cp "/tmp/${PAK_NAME}-minuisettings.bak" "$SETTINGS_PATH"
+		rm -f "/tmp/${PAK_NAME}-minuisettings.bak"
+	fi
 	rm -f "/tmp/${PAK_NAME}-settings.json"
 	rm -f "/tmp/${PAK_NAME}-minui-list.json"
 	rm -f "/tmp/${PAK_NAME}-minui-list-write-location.out"
@@ -503,7 +557,7 @@ main() {
 
 	trap cleanup EXIT INT TERM HUP QUIT
 
-	case "$PLATFORM" in tg5040|tg5050|h700|my285) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
+	case "$PLATFORM" in tg5040|tg5050|h700|my285|my355) ;; *) present "Unsupported platform: $PLATFORM"; return 1 ;; esac
 
 	# Restore executable bits before anything needs the UI or the converter,
 	# including the recovery pass below.
