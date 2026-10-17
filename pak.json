@@ -1,12 +1,13 @@
 {
   "name": "RetroArch Core Saves",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "type": "TOOL",
   "description": "Convert your save files and use RetroArch core-name folders for easier SyncThing setup.",
   "author": "bmpriest",
   "repo_url": "https://github.com/bmpriest/nextui-retroarch-core-saves-pak",
   "release_filename": "RetroArch.Core.Saves.pak.zip",
   "changelog": {
+    "0.7.1": "Added compatibility for my355 (Miyoo Flip on the apommel/NextUI fork, https://github.com/apommel/NextUI), with menus that follow the NextUI color palette.",
     "0.7.0": "Mounts now go through mountctl, the mount manager shared with Profiles.pak, so switching profiles never leaves Core Saves mounts stacked or blocks the switch. Fixes the mount count on h700.",
     "0.6.0": "Bigger update to add h700 support and fix compatibility issues with Profiles.pak and Netplay.pak",
     "0.5.5": "Added compatibility for my285. Working on Profile support.",
@@ -23,6 +24,7 @@
     "tg5040",
     "tg5050",
     "h700",
-    "my285"
+    "my285",
+    "my355"
   ]
 }

@@ -326,6 +326,9 @@ its own folder name and the installed mount layer is generated to match.
 - `tg5050` for TrimUI Smart Pro S.
 - `h700` for the Anbernic RG XX family.
 - `my285` for the Miyoo Mini Flip.
+- `my355` for the Miyoo Flip, running the
+  [apommel/NextUI](https://github.com/apommel/NextUI) fork, which adds my355
+  support to NextUI (see its `my355-latest-rebase` branch).
 
 Each supported platform has its own binaries under `bin/<PLATFORM>`, and the pak
 refuses to run on anything else rather than guessing. Library search paths are
@@ -342,6 +345,13 @@ The platform binaries are from the MIT-licensed projects:
 - `jqlang/jq`
 
 Their license texts are included under `bin/`.
+
+`bin/my355/minui-list` is the upstream `minui-list-my355-nextui` 0.15.4 release
+(SHA-256 `06e76bb9...b5390`) with one patch: the muted/unselectable row text,
+which upstream hardcodes to light grey `#CCCCCC`, reads the theme's hint color
+(`color6`) instead, so status rows stay legible on light palettes. The patch
+replaces the 7 instructions at `0x40638c` in `theme_row_text_color` with
+`uintToColour(THEME_COLOR6_255)`, the same call its neighbouring cases make.
 
 ## Tests
 
