@@ -1,7 +1,8 @@
-.PHONY: release dev test clean
+.PHONY: release dev test clean sync-mounts
 
 ARCHIVE := dist/RetroArch Core Saves.pak.zip
 PACKAGE := RetroArch Core Saves.pak
+MOUNT_MANAGER := ../mount-manager
 
 release:
 	mkdir -p dist
@@ -31,7 +32,14 @@ dev:
 		-x "/RetroArch Core Saves.pak.zip"
 
 test:
-	bin/tests/test-core-saves.sh
+	sh bin/tests/test-core-saves.sh
+	sh bin/tests/test-core-saves-mounts.sh
+
+# bin/mounts is a copy of ../mount-manager, the source shared with Profiles.pak.
+sync-mounts:
+	mkdir -p bin/mounts
+	cp $(MOUNT_MANAGER)/mountctl.sh $(MOUNT_MANAGER)/layers/20-core-saves.sh bin/mounts/
+	chmod 0755 bin/mounts/*.sh
 
 clean:
 	rm -f "$(ARCHIVE)"

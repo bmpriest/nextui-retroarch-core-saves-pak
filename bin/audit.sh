@@ -46,8 +46,7 @@ begin_operation() {
 	snapshot_operation_file "$MOUNT_TABLE" mounts.conf &&
 		snapshot_operation_file "$MANIFEST" migration.manifest &&
 		snapshot_operation_file "$ENABLED_FILE" enabled &&
-		snapshot_operation_file "$HOOK_FILE" boot-hook &&
-		snapshot_operation_file "$HOME_PATH/boot-mount.sh" boot-mount.sh || {
+		snapshot_operation_file "$MOUNT_LAYER_FILE" mount-layer || {
 		rm -rf "$OPERATION_STATE"
 		return 1
 	}
@@ -141,7 +140,7 @@ restore_conversion_backup() {
 }
 
 audit_operation() {
-	local operation phase backup saved_table
+	local operation phase backup
 	[ -f "$OPERATION_JOURNAL" ] || return 0
 
 	operation=$(journal_value operation)
@@ -172,18 +171,12 @@ audit_operation() {
 		}
 	fi
 
-	saved_table="$OPERATION_STATE/mounts.conf"
 	if [ "$phase" != recovering-mounts ]; then
 		show_progress "Recovering interrupted $operation operation..." 10
-		unmount_table "$MOUNT_TABLE" || {
+		unmount_core_mounts || {
 			ACTION_RESULT="Could not unmount save folders during recovery. Reopen the pak to retry."
 			return 1
 		}
-		[ "$saved_table" = "$MOUNT_TABLE" ] ||
-			unmount_table "$saved_table" || {
-				ACTION_RESULT="Could not unmount previous save folders during recovery. Reopen the pak to retry."
-				return 1
-			}
 
 		if [ -n "$backup" ]; then
 			if [ "$operation" = conversion ]; then
@@ -198,8 +191,7 @@ audit_operation() {
 		restore_operation_file "$MOUNT_TABLE" mounts.conf &&
 			restore_operation_file "$MANIFEST" migration.manifest &&
 			restore_operation_file "$ENABLED_FILE" enabled &&
-			restore_operation_file "$HOOK_FILE" boot-hook &&
-			restore_operation_file "$HOME_PATH/boot-mount.sh" boot-mount.sh || {
+			restore_mount_layer || {
 			ACTION_RESULT="Could not restore the pre-operation configuration. Reopen the pak to retry."
 			return 1
 		}
@@ -228,6 +220,18 @@ audit_operation() {
 	sync
 	ACTION_RESULT="Recovered an interrupted $operation operation.
 The previous save layout and settings were restored."
+}
+
+# The layer is regenerated rather than copied back: its content only depends on
+# this pak's folder. A journal written before mountctl recorded the old boot
+# hook instead, which stands for the same state.
+restore_mount_layer() {
+	if [ -f "$OPERATION_STATE/mount-layer.exists" ] ||
+		[ -f "$OPERATION_STATE/boot-hook.exists" ]; then
+		install_mount_layer
+	else
+		release_mount_layer
+	fi
 }
 
 abort_operation() {

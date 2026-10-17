@@ -5,6 +5,9 @@ set -eu
 PAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 TEST_ROOT=${TMPDIR:-/tmp}/core-saves-tests.$$
 trap 'rm -rf "$TEST_ROOT"' EXIT INT TERM
+mkdir -p "$TEST_ROOT"
+# mountctl compares resolved paths, so the fixtures must use them too.
+TEST_ROOT=$(CDPATH= cd -P -- "$TEST_ROOT" && pwd -P)
 
 PATH="$PAK_DIR/bin/desktop:$PATH"
 export PATH
@@ -94,8 +97,10 @@ load_fixture() {
 	LOGS_PATH="$USERDATA_PATH/logs"
 	CORE_SAVES_DIR="${2:-$PAK_DIR}"
 	CORE_SAVES_SOURCE_ONLY=1
+	MOUNTS_LOCK="$TEST_ROOT/$name/mountctl.lock"
+	TMPDIR="$TEST_ROOT/$name"
 	export SDCARD_PATH PLATFORM SYSTEM_PATH SHARED_USERDATA_PATH USERDATA_PATH
-	export LOGS_PATH CORE_SAVES_DIR CORE_SAVES_SOURCE_ONLY
+	export LOGS_PATH CORE_SAVES_DIR CORE_SAVES_SOURCE_ONLY MOUNTS_LOCK TMPDIR
 
 	mkdir -p "$SDCARD_PATH/Saves" "$SHARED_USERDATA_PATH"
 	write_emulator "$SDCARD_PATH" GBA gpsp
@@ -134,7 +139,8 @@ test_minui_to_core_and_generic_restore() (
 	assert_contains "$MOUNT_TABLE" "GB|Gambatte"
 	assert_contains "$MOUNT_TABLE" "GBC|Gambatte"
 	assert_file "$ENABLED_FILE"
-	assert_file "$HOOK_FILE"
+	assert_file "$MOUNT_LAYER_FILE"
+	assert_file "$MOUNTS_HOOK"
 	[ "$(retro_core_name_for_emu mednafen_supafaust)" = "Supafaust" ] ||
 		fail "Supafaust library name mapping is incorrect"
 	if command -v jq >/dev/null 2>&1; then
@@ -168,7 +174,9 @@ test_minui_to_core_and_generic_restore() (
 	assert_absent "$SAVES_PATH/GBC/Mono.sav"
 	assert_contains "$SETTINGS_PATH" "saveFormat=2"
 	assert_absent "$ENABLED_FILE"
-	assert_absent "$HOOK_FILE"
+	assert_absent "$MOUNT_LAYER_FILE"
+	assert_absent "$MOUNTS_HOOK"
+	assert_absent "$MOUNTS_HOME/mountctl.sh"
 	assert_dir "$CORES_PATH"
 )
 
@@ -305,8 +313,7 @@ test_restore_routes_only_safe_core_saves() (
 	printf 'foreign' > "$CORES_PATH/ForeignCore/Other.srm"
 	printf 'GBA|gpSP\nGB|Gambatte\nGBC|Gambatte\n' > "$MOUNT_TABLE"
 	: > "$ENABLED_FILE"
-	mkdir -p "$(dirname "$HOOK_FILE")"
-	: > "$HOOK_FILE"
+	install_mount_layer || fail "$MOUNT_ERROR"
 
 	restore_to_legacy current || fail "$ACTION_RESULT"
 
@@ -334,67 +341,46 @@ test_restore_routes_only_safe_core_saves() (
 	assert_contains "$REPORT_FILE" "Both.srm matches GB, GBC"
 	assert_contains "$REPORT_FILE" "Other.srm (no installed emulator maps to ForeignCore)"
 	assert_absent "$ENABLED_FILE"
-	assert_absent "$HOOK_FILE"
+	assert_absent "$MOUNT_LAYER_FILE"
 )
 
-test_boot_mount_hook() (
-	load_fixture mounts
-	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA" "$TEST_ROOT/fake-bin"
-	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
+# What the layer asks mountctl to mount. mountctl itself, with real mounts, is
+# tested in ../mount-manager and bin/tests/test-core-saves-mounts.sh.
+test_mount_layer_plan() (
+	load_fixture layer-plan
+	layer="$PAK_DIR/bin/mounts/20-core-saves.sh"
+	CORE_SAVES_HOME="$HOME_PATH"
+	export CORE_SAVES_HOME
+	printf 'GBA|gpSP\nGB|Gambatte\n' > "$MOUNT_TABLE"
+
+	[ -z "$(sh "$layer" plan)" ] || fail "a disabled layer planned mounts"
 	: > "$ENABLED_FILE"
-	FAKE_MOUNT_LOG="$TEST_ROOT/mount-call.txt"
-	export FAKE_MOUNT_LOG
-	{
-		echo '#!/bin/sh'
-		echo 'printf "%s\n" "$*" >> "$FAKE_MOUNT_LOG"'
-	} > "$TEST_ROOT/fake-bin/mount"
-	chmod +x "$TEST_ROOT/fake-bin/mount"
-	PATH="$TEST_ROOT/fake-bin:$PATH"
-	export PATH
+	plan=$(sh "$layer" plan) || fail "layer plan failed"
+	tab=$(printf '\t')
+	[ "$plan" = "$CORES_PATH/gpSP${tab}$SAVES_PATH/GBA${tab}empty-target
+$CORES_PATH/Gambatte${tab}$SAVES_PATH/GB${tab}empty-target" ] ||
+		fail "unexpected plan: $plan"
+	case "$(sh "$layer" scope)" in
+		"below${tab}$SAVES_PATH"*) ;;
+		*) fail "layer does not declare /Saves as its scope" ;;
+	esac
 
-	"$PAK_DIR/bin/boot-mount.sh" || fail "boot mount hook failed"
-	assert_contains "$FAKE_MOUNT_LOG" \
-		"-o bind $CORES_PATH/gpSP $SAVES_PATH/GBA"
-
-	mkdir -p "$SDCARD_PATH/.profiles"
+	# Only the profile that owns Core Saves gets its mounts, and only while
+	# the Profiles layer is installed.
+	mkdir -p "$SDCARD_PATH/.profiles" "$MOUNTS_HOME/layers.d"
+	: > "$MOUNTS_HOME/layers.d/10-profiles.sh"
 	printf '%s\n' Kid > "$SDCARD_PATH/.profiles/active"
 	printf '%s\n' Ben > "$SDCARD_PATH/.profiles/core-saves-profile"
-	before=$(wc -l < "$FAKE_MOUNT_LOG" | tr -d ' ')
-	if "$PAK_DIR/bin/boot-mount.sh"; then
-		fail "boot mount hook ignored the Profiles owner"
-	fi
-	after=$(wc -l < "$FAKE_MOUNT_LOG" | tr -d ' ')
-	[ "$before" = "$after" ] || fail "incompatible profile created a Core Saves mount"
-	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
-		"Core Saves belongs to profile Ben; active profile is Kid"
-	rm -rf "$SDCARD_PATH/.profiles"
+	[ -z "$(sh "$layer" plan 2>/dev/null)" ] || fail "a non-owner profile got mounts"
+	printf '%s\n' Ben > "$SDCARD_PATH/.profiles/active"
+	[ -n "$(sh "$layer" plan)" ] || fail "the owner profile got no mounts"
+	rm "$SDCARD_PATH/.profiles/core-saves-profile"
+	sh "$layer" plan >/dev/null || fail "first profile could not claim Core Saves"
+	assert_contains "$SDCARD_PATH/.profiles/core-saves-profile" Ben
 
-	MOUNTINFO_PATH="$TEST_ROOT/boot-mountinfo"
-	export MOUNTINFO_PATH
-	printf '1 0 8:1 / / rw - ext4 /dev/test rw\n' > "$MOUNTINFO_PATH"
-	printf '2 1 8:1 /somewhere-else %s rw - ext4 /dev/test rw\n' \
-		"$SAVES_PATH/GBA" >> "$MOUNTINFO_PATH"
-	if "$PAK_DIR/bin/boot-mount.sh"; then
-		fail "mount hook accepted the wrong bind source"
-	fi
-	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
-		"Wrong source mounted at $SAVES_PATH/GBA; expected $CORES_PATH/gpSP"
-
-	: > "$MOUNTINFO_PATH"
-	printf 'do-not-hide' > "$SAVES_PATH/GBA/existing.sav"
-	if "$PAK_DIR/bin/boot-mount.sh"; then
-		fail "mount hook hid a non-empty target"
-	fi
-	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
-		"Refusing to hide non-empty mountpoint: $SAVES_PATH/GBA"
-
-	rm -rf "$SAVES_PATH/GBA" "$CORES_PATH/gpSP"
-	if "$PAK_DIR/bin/boot-mount.sh"; then
-		fail "mount hook accepted a missing core save source"
-	fi
-	assert_absent "$CORES_PATH/gpSP"
-	assert_contains "$LOGS_PATH/core-saves-mounts.txt" \
-		"Missing core save source: $CORES_PATH/gpSP"
+	: > "$MOUNT_TABLE"
+	sh "$layer" plan >/dev/null 2>&1 && fail "an enabled layer with no table was accepted"
+	return 0
 )
 
 test_mountinfo_source_verification() (
@@ -407,9 +393,9 @@ test_mountinfo_source_verification() (
 		printf '2 1 8:1 %s %s rw - ext4 /dev/test rw\n' \
 			"$CORES_PATH/FinalBurn\\040Neo" "$SAVES_PATH/FBA"
 	} > "$MOUNTINFO_PATH"
-	mount_matches "$CORES_PATH/FinalBurn Neo" "$SAVES_PATH/FBA" ||
+	mc_matches "$CORES_PATH/FinalBurn Neo" "$SAVES_PATH/FBA" ||
 		fail "expected bind source was not recognized"
-	mount_matches "$CORES_PATH/Gambatte" "$SAVES_PATH/FBA" &&
+	mc_matches "$CORES_PATH/Gambatte" "$SAVES_PATH/FBA" &&
 		fail "wrong bind source was accepted"
 	return 0
 )
@@ -445,7 +431,7 @@ test_active_mount_rows_include_unmapped_folders() (
 	mkdir -p "$CORES_PATH/gpSP" "$CORES_PATH/ForeignCore"
 	printf 'FC|FCEUmm\nGB|Gambatte\nGBA|gpSP\nGBC|Gambatte\n' > "$MOUNT_TABLE"
 	: > "$ENABLED_FILE"
-	mount_matches() {
+	mc_matches() {
 		case "$2" in
 			"$SAVES_PATH/FC"|"$SAVES_PATH/GB"|"$SAVES_PATH/GBA"|"$SAVES_PATH/GBC")
 				return 0
@@ -548,8 +534,7 @@ test_conversion_failure_rolls_back_only_planned_files() (
 	printf 'foreign-original' > "$CORES_PATH/ForeignCore/Other.srm"
 	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
 	: > "$ENABLED_FILE"
-	printf '#!/bin/sh\nexit 0\n' > "$HOME_PATH/boot-mount.sh"
-	chmod +x "$HOME_PATH/boot-mount.sh"
+	install_mount_layer || fail "$MOUNT_ERROR"
 	set_save_format() {
 		printf 'synced-during-conversion' > "$CORES_PATH/ForeignCore/New.srm"
 		return 1
@@ -598,12 +583,10 @@ test_interrupted_conversion_is_recovered_selectively() (
 test_recovery_keeps_journal_when_remount_fails() (
 	load_fixture recovery-remount-failure
 	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
-	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA" "$(dirname "$HOOK_FILE")"
+	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA"
 	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
 	: > "$ENABLED_FILE"
-	printf '#!/bin/sh\nexit 1\n' > "$HOME_PATH/boot-mount.sh"
-	chmod +x "$HOME_PATH/boot-mount.sh"
-	: > "$HOOK_FILE"
+	install_mount_layer || fail "$MOUNT_ERROR"
 	begin_operation restore || fail "$ACTION_RESULT"
 	backup=$(make_backup restore) || fail "could not make remount recovery backup"
 	operation_phase installing "$backup" || fail "could not journal remount fixture"
@@ -659,7 +642,8 @@ test_enable_mount_failure_rolls_back() (
 	assert_absent "$CORES_PATH"
 	assert_absent "$MOUNT_TABLE"
 	assert_absent "$ENABLED_FILE"
-	assert_absent "$HOOK_FILE"
+	assert_absent "$MOUNT_LAYER_FILE"
+	assert_absent "$MOUNTS_HOOK"
 	assert_absent "$OPERATION_JOURNAL"
 	assert_absent "$OPERATION_STATE"
 	assert_contains "$SETTINGS_PATH" "saveFormat=0"
@@ -684,8 +668,7 @@ test_interrupted_enable_is_recovered() (
 	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
 	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
 	: > "$ENABLED_FILE"
-	mkdir -p "$(dirname "$HOOK_FILE")"
-	: > "$HOOK_FILE"
+	install_mount_layer || fail "$MOUNT_ERROR"
 
 	audit_operation || fail "$ACTION_RESULT"
 
@@ -695,7 +678,7 @@ test_interrupted_enable_is_recovered() (
 	assert_absent "$CORES_PATH"
 	assert_absent "$MOUNT_TABLE"
 	assert_absent "$ENABLED_FILE"
-	assert_absent "$HOOK_FILE"
+	assert_absent "$MOUNT_LAYER_FILE"
 	assert_absent "$OPERATION_JOURNAL"
 	assert_absent "$OPERATION_STATE"
 	assert_contains "$SETTINGS_PATH" "saveFormat=2"
@@ -704,13 +687,11 @@ test_interrupted_enable_is_recovered() (
 test_interrupted_restore_is_recovered() (
 	load_fixture interrupted-restore
 	printf 'saveFormat=3\n' > "$SETTINGS_PATH"
-	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA" "$(dirname "$HOOK_FILE")"
+	mkdir -p "$CORES_PATH/gpSP" "$SAVES_PATH/GBA"
 	printf 'core-save' > "$CORES_PATH/gpSP/Game.srm"
 	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
 	printf 'enabled-state\n' > "$ENABLED_FILE"
-	printf 'hook-state\n' > "$HOOK_FILE"
-	printf 'mount-helper\n' > "$HOME_PATH/boot-mount.sh"
-	chmod +x "$HOME_PATH/boot-mount.sh"
+	install_mount_layer || fail "$MOUNT_ERROR"
 	printf 'manifest-state\n' > "$MANIFEST"
 	mount_recovery="$TEST_ROOT/interrupted-restore-remounted"
 	run_mounts() { : > "$mount_recovery"; }
@@ -721,7 +702,9 @@ test_interrupted_restore_is_recovered() (
 	clear_mountpoint GBA
 	printf 'partial-restore' > "$SAVES_PATH/GBA/Game.sav"
 	printf 'saveFormat=2\n' > "$SETTINGS_PATH"
-	rm -f "$ENABLED_FILE" "$HOOK_FILE" "$MOUNT_TABLE" "$MANIFEST"
+	rm -f "$ENABLED_FILE" "$MOUNT_TABLE" "$MANIFEST"
+	release_mount_layer || fail "$MOUNT_ERROR"
+	assert_absent "$MOUNT_LAYER_FILE"
 
 	audit_operation || fail "$ACTION_RESULT"
 
@@ -729,8 +712,7 @@ test_interrupted_restore_is_recovered() (
 	assert_empty_dir "$SAVES_PATH/GBA"
 	assert_contains "$MOUNT_TABLE" "GBA|gpSP"
 	assert_contains "$ENABLED_FILE" "enabled-state"
-	assert_contains "$HOOK_FILE" "hook-state"
-	assert_contains "$HOME_PATH/boot-mount.sh" "mount-helper"
+	assert_contains "$MOUNT_LAYER_FILE" "CORE_SAVES_HOME='$HOME_PATH'"
 	assert_contains "$MANIFEST" "manifest-state"
 	assert_file "$mount_recovery"
 	assert_absent "$OPERATION_JOURNAL"
@@ -815,7 +797,7 @@ test_mounts_row_is_locked_without_active_mounts() (
 		fail "stale mount table is still reachable from the menu"
 )
 
-test_boot_hook_honors_a_renamed_pak_folder() (
+test_mount_layer_honors_a_renamed_pak_folder() (
 	renamed="$TEST_ROOT/renamed/01 Core Saves.pak"
 	link_renamed_pak "$renamed"
 	load_fixture renamed "$renamed"
@@ -826,22 +808,51 @@ test_boot_hook_honors_a_renamed_pak_folder() (
 
 	enable_core_saves >/dev/null || fail "$ACTION_RESULT"
 
-	mkdir -p "$TEST_ROOT/renamed-bin"
-	FAKE_MOUNT_LOG="$TEST_ROOT/renamed-mount-call.txt"
-	export FAKE_MOUNT_LOG
-	{
-		echo '#!/bin/sh'
-		echo 'printf "%s\n" "$*" >> "$FAKE_MOUNT_LOG"'
-	} > "$TEST_ROOT/renamed-bin/mount"
-	chmod +x "$TEST_ROOT/renamed-bin/mount"
-	PATH="$TEST_ROOT/renamed-bin:$PATH"
-	export PATH
+	# Boot runs the installed layer with no knowledge of the pak folder.
+	assert_contains "$MOUNT_LAYER_FILE" "CORE_SAVES_HOME='$SHARED_USERDATA_PATH/01 Core Saves'"
+	plan=$(env -u CORE_SAVES_HOME sh "$MOUNT_LAYER_FILE" plan) ||
+		fail "installed layer failed for a renamed pak folder"
+	case "$plan" in
+		*"$CORES_PATH/gpSP	$SAVES_PATH/GBA"*) ;;
+		*) fail "installed layer did not read the renamed state folder: $plan" ;;
+	esac
+)
 
-	# Boot runs the installed hook with no knowledge of the pak folder.
-	sh "$HOOK_FILE" || fail "boot hook failed for a renamed pak folder"
-	assert_file "$FAKE_MOUNT_LOG"
-	assert_contains "$FAKE_MOUNT_LOG" \
-		"-o bind $CORES_PATH/gpSP $SAVES_PATH/GBA"
+# Profiles gives every profile its own shared data, so its own enabled file,
+# while the layer is shared. A profile without Core Saves must not remove it.
+test_layer_survives_profiles_without_core_saves() (
+	load_fixture profiles-layer
+	mkdir -p "$SDCARD_PATH/.profiles/Ben/shared/$PAK_NAME" "$SDCARD_PATH/.profiles/Kid/shared"
+	: > "$SDCARD_PATH/.profiles/Ben/shared/$PAK_NAME/enabled"
+	printf '%s\n' Kid > "$SDCARD_PATH/.profiles/active"
+	install_mount_layer || fail "$MOUNT_ERROR"
+
+	ensure_mount_layer || fail "$MOUNT_ERROR"
+	assert_file "$MOUNT_LAYER_FILE"
+	release_mount_layer || fail "$MOUNT_ERROR"
+	assert_file "$MOUNT_LAYER_FILE"
+
+	rm "$SDCARD_PATH/.profiles/Ben/shared/$PAK_NAME/enabled"
+	ensure_mount_layer || fail "$MOUNT_ERROR"
+	assert_absent "$MOUNT_LAYER_FILE"
+	assert_absent "$MOUNTS_HOOK"
+)
+
+# Versions before mountctl installed their own boot hook and helper. Opening
+# this one moves an enabled install onto the layer and removes them.
+test_launch_moves_legacy_hook_to_mountctl() (
+	load_fixture legacy-hook
+	printf 'GBA|gpSP\n' > "$MOUNT_TABLE"
+	: > "$ENABLED_FILE"
+	mkdir -p "$(dirname "$LEGACY_HOOK_FILE")"
+	printf '#!/bin/sh\n' > "$LEGACY_HOOK_FILE"
+	printf '#!/bin/sh\n' > "$HOME_PATH/boot-mount.sh"
+
+	ensure_mount_layer || fail "$MOUNT_ERROR"
+	assert_file "$MOUNT_LAYER_FILE"
+	assert_file "$MOUNTS_HOOK"
+	assert_absent "$LEGACY_HOOK_FILE"
+	assert_absent "$HOME_PATH/boot-mount.sh"
 )
 
 test_reenable_reuses_an_existing_conflict_copy() (
@@ -1286,7 +1297,7 @@ test_rzip_to_generic_conversion
 test_malformed_rzip_restore_rolls_back
 test_shared_core_collision_is_reported_and_preserved
 test_restore_routes_only_safe_core_saves
-test_boot_mount_hook
+test_mount_layer_plan
 test_mountinfo_source_verification
 test_inactive_menu_state
 test_active_mount_rows_include_unmapped_folders
@@ -1302,7 +1313,9 @@ test_recovery_keeps_journal_when_remount_fails
 test_active_conversion_warns_and_only_converts_mapped_cores
 test_backup_retention
 test_mounts_row_is_locked_without_active_mounts
-test_boot_hook_honors_a_renamed_pak_folder
+test_mount_layer_honors_a_renamed_pak_folder
+test_layer_survives_profiles_without_core_saves
+test_launch_moves_legacy_hook_to_mountctl
 test_reenable_reuses_an_existing_conflict_copy
 test_conversion_reports_saves_without_a_rom_extension
 test_conversion_to_minui_matches_roms_once

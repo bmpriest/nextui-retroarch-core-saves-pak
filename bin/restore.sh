@@ -56,7 +56,7 @@ Report: $REPORT_FILE"
 Report: $REPORT_FILE"
 		return 1
 	}
-	unmount_table "$MOUNT_TABLE" || {
+	unmount_core_mounts || {
 		rm -f "$mappings" "$plan" "$rom_index" "$tags"
 		report_issue "Could not unmount the core save folders."
 		finish_report
@@ -200,7 +200,11 @@ Report: $REPORT_FILE"
 		}
 	done < "$tags"
 	show_progress "Finishing restore..." 90
-	rm -f "$HOOK_FILE" "$ENABLED_FILE"
+	rm -f "$ENABLED_FILE"
+	# Without the enabled file the layer plans nothing, so a failure here only
+	# leaves an idle layer behind for the next launch to remove.
+	release_mount_layer ||
+		report_note "The mount layer could not be removed yet: $MOUNT_ERROR"
 	rm -f "$mappings" "$plan" "$rom_index" "$tags"
 	rm -rf "$stage"
 	sync

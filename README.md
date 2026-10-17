@@ -79,7 +79,7 @@ Available actions depend on current state.
 2. Creates folders in `/Saves/Cores` corresponding to on-device emulator cores
 3. Copies save files to `/Saves/Cores`
 4. If necessary, converts save files to .srm (uncompressed)
-5. Installs script to mount folders at boot
+5. Registers its mounts with mountctl, which mounts them at every boot
 6. Mounts folders
 
 
@@ -130,8 +130,12 @@ What changes is what the pak reports and where it puts things that sit outside
   folder is moved into the active profile the next time the pak is opened.
 
 Core Saves may only be enabled for one profile, which Profiles records in
-`.profiles/core-saves-profile`. Its tag mounts are torn down before Profiles
-switches the `/Saves` parent and re-established only for the owning profile.
+`.profiles/core-saves-profile`. Both paks mount through mountctl (see
+[Boot Mounts](#boot-mounts)): Profiles is layer 10 and Core Saves layer 20, so
+on every switch mountctl takes the tag mounts down, swaps `/Saves`, and mounts
+them again only for the owning profile. Each profile has its own enabled state,
+because it lives in that profile's shared data; the layer stays installed while
+any profile has Core Saves enabled and does nothing for the others.
 
 ### Syncthing with Profiles
 
@@ -153,14 +157,27 @@ would sync down underneath the mount where nothing can read them.
 
 ## Boot Mounts
 
-Enabling core saves installs a synchronous NextUI boot hook:
+The pak does not mount anything itself. It ships `mountctl` (`bin/mounts`), the
+mount manager it shares with Profiles.pak, and enabling core saves registers
+the tag mounts as mountctl's layer 20: "while enabled, mount each
+`/Saves/<tag>` from `/Saves/Cores/<core>`". mountctl refuses to mount over a tag
+folder that has files in it, so nothing is ever hidden. Installed on the card:
 
 ```text
-/mnt/SDCARD/.userdata/<platform>/.hooks/boot.d/core-saves.sync.sh
+.userdata/<platform>/Mounts/mountctl.sh                the newest copy any pak shipped
+.userdata/<platform>/Mounts/layers.d/20-core-saves.sh
+.userdata/<platform>/.hooks/boot.d/00-mounts.sync.sh   applies every layer at boot
+.userdata/<platform>/logs/mounts.txt                   every mount change
 ```
 
-No pre-launch or post-launch hook is installed. Mounts are established once
-per boot and remain active until shutdown or reversion.
+The boot hook runs synchronously, before NextUI starts. No pre-launch or
+post-launch hook is installed. `sh .userdata/<platform>/Mounts/mountctl.sh
+status` lists what each layer wants mounted and what is live.
+
+Versions before 0.7 installed their own `boot.d/core-saves.sync.sh` hook and a
+`boot-mount.sh` helper; opening this version replaces them with the layer.
+Reverting removes the layer, and mountctl with it when no other pak still has
+one.
 
 Persistent state and the generated mount table live in:
 
@@ -213,7 +230,7 @@ Enable, restore, and in-place conversion operations also use a small durable
 operation journal. It
 records the operation, current phase, pre-operation control files, and the
 backup path. If an error occurs after changes begin, the pak immediately rolls
-back the save tree, format setting, mount table, enabled state, and boot hook.
+back the save tree, format setting, mount table, enabled state, and mount layer.
 Conversion rollback is limited to the exact source and destination files in its
 conversion plan, so unrelated saves—including files that arrive through
 Syncthing while conversion runs—are not replaced from the backup.
@@ -301,7 +318,7 @@ correct an entry that turns out to be wrong without waiting for a release.
 4. Safely unmount your SD card, insert it into device, enjoy
 
 The folder may be renamed (for example to control menu ordering); the pak reads
-its own folder name and the installed boot hook is generated to match.
+its own folder name and the installed mount layer is generated to match.
 
 `<PLATFORM>` should match your device:
 
@@ -328,11 +345,16 @@ Their license texts are included under `bin/`.
 
 ## Tests
 
-Run the host-side migration suite with:
+Run both suites with `make test`, or the host-side migration suite alone with:
 
 ```sh
 "RetroArch Core Saves.pak/bin/tests/test-core-saves.sh"
 ```
+
+`bin/tests/test-core-saves-mounts.sh` re-runs itself under `unshare -rm`, a
+private user and mount namespace, to make real bind mounts without root: moving
+a 0.6 install onto mountctl, re-applying with the tag folders mounted, boot,
+refusing to hide files, and reverting.
 
 The suite uses the host executables in `bin/desktop/`, reached through the same
 `PATH`-based command lookup used on device.

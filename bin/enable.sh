@@ -113,7 +113,7 @@ Report: $REPORT_FILE"
 		return 1
 	}
 
-	unmount_table "$MOUNT_TABLE" || {
+	unmount_core_mounts || {
 		rm -f "$tmp"
 		report_issue "Could not unmount an existing save folder."
 		finish_report
@@ -210,9 +210,10 @@ Report: $REPORT_FILE"
 		return 1
 	}
 
-	install_boot_hook || {
+	install_mount_layer || {
+		report_issue "Could not install the mount layer: $MOUNT_ERROR"
 		finish_report
-		abort_operation "Could not install the boot mount hook.
+		abort_operation "Could not install the Core Saves mount layer.
 Report: $REPORT_FILE"
 		return 1
 	}
@@ -227,7 +228,7 @@ Report: $REPORT_FILE"
 	show_progress "Mounting core save folders..." 80
 
 	run_mounts || {
-		report_issue "Saves were copied, but one or more bind mounts failed."
+		report_issue "Saves were copied, but one or more bind mounts failed: $MOUNT_ERROR"
 		finish_report
 		abort_operation "One or more core save mounts failed.
 Report: $REPORT_FILE"

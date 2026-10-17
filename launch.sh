@@ -20,14 +20,12 @@ CORES_PATH="$SAVES_PATH/Cores"
 ROMS_PATH="$SDCARD_PATH/Roms"
 SETTINGS_PATH="$SHARED_USERDATA_PATH/minuisettings.txt"
 HOME_PATH="$SHARED_USERDATA_PATH/$PAK_NAME"
-HOOK_DIR="$USERDATA_PATH/.hooks/boot.d"
 BACKUP_ROOT="$SDCARD_PATH/.core-saves-backups"
 MAPPING_CONF="$DIR/mapping.conf"
 
 MOUNT_TABLE="$HOME_PATH/mounts.conf"
 MANIFEST="$HOME_PATH/migration.manifest"
 ENABLED_FILE="$HOME_PATH/enabled"
-HOOK_FILE="$HOOK_DIR/core-saves.sync.sh"
 LOG_FILE="$LOGS_PATH/core-saves.txt"
 REPORT_FILE="$HOME_PATH/conversion-report.txt"
 OPERATION_JOURNAL="$HOME_PATH/operation.journal"
@@ -173,7 +171,7 @@ export PATH="$DIR/bin/$PLATFORM:$DIR/bin:$PATH"
 LD_LIBRARY_PATH=$(compose_library_path)
 export LD_LIBRARY_PATH
 
-for library in report settings mappings mount-manager backup save-format audit enable restore; do
+for library in report settings mappings mounts backup save-format audit enable restore; do
 	. "$DIR/bin/$library.sh" || exit 1
 done
 
@@ -238,7 +236,7 @@ mount_status() {
 	while IFS='|' read -r tag core; do
 		[ -n "$tag" ] && [ -n "$core" ] || continue
 		total=$((total + 1))
-		mount_matches "$CORES_PATH/$core" "$SAVES_PATH/$tag" &&
+		mc_matches "$CORES_PATH/$core" "$SAVES_PATH/$tag" &&
 			active=$((active + 1))
 	done < "$MOUNT_TABLE"
 
@@ -252,7 +250,7 @@ has_active_mounts() {
 
 	while IFS='|' read -r tag core; do
 		[ -n "$tag" ] && [ -n "$core" ] || continue
-		mount_matches "$CORES_PATH/$core" "$SAVES_PATH/$tag" && return 0
+		mc_matches "$CORES_PATH/$core" "$SAVES_PATH/$tag" && return 0
 	done < "$MOUNT_TABLE"
 
 	return 1
@@ -524,6 +522,15 @@ main() {
 		rc=$?
 		present "$ACTION_RESULT"
 		[ "$rc" -eq 0 ] || return "$rc"
+	fi
+
+	# Moves an install from before mountctl onto it and remounts, so the menu
+	# below reports what is really mounted.
+	if ensure_mount_layer; then
+		[ -f "$ENABLED_FILE" ] && ! run_mounts &&
+			present "Core save folders could not all be mounted.\n\n$MOUNT_ERROR"
+	else
+		present "Could not update the Core Saves mount layer.\n\n$MOUNT_ERROR"
 	fi
 
 	command -v minui-list >/dev/null 2>&1 &&
